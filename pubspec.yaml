@@ -1,0 +1,35 @@
+name: airo_background_downloads
+description: Progressive background downloader contracts, WorkManager resume policies, and integrity verification.
+version: 1.0.0
+homepage: https://github.com/DevelopersCoffee/airo_background_downloads
+repository: https://github.com/DevelopersCoffee/airo_background_downloads
+issue_tracker: https://github.com/DevelopersCoffee/airo_background_downloads/issues
+
+topics:
+  - downloads
+  - background
+  - resume
+  - flutter
+  - progressive
+
+environment:
+  sdk: ^3.12.2
+  flutter: ">=3.44.4"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: io.airo.platform_downloads
+        pluginClass: PlatformDownloadsPlugin
+      ios:
+        pluginClass: PlatformDownloadsPlugin

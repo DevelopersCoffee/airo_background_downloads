@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.0
+
+- Initial open-source stable release.
+- Progressive background downloader contracts, WorkManager resume policies, and iOS background URLSession integration.
+- Atomic artifact promotion with SHA-256 integrity verification.
+
 ## 0.1.0
 
 - Add the versioned product-neutral background-download contract.

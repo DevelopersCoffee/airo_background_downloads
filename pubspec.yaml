@@ -1,7 +1,7 @@
 name: airo_background_downloads
-description: Progressive background downloader contracts, WorkManager resume policies, and integrity verification.
-version: 1.0.0
-homepage: https://github.com/DevelopersCoffee/airo_background_downloads
+description: Resilient background file transfer manager with WorkManager & URLSession native engines, checksum verification, network constraints, queue visualizer, encryption post-processing, and telemetry.
+version: 1.1.0
+homepage: https://developerscoffee.com
 repository: https://github.com/DevelopersCoffee/airo_background_downloads
 issue_tracker: https://github.com/DevelopersCoffee/airo_background_downloads/issues
 documentation: https://github.com/DevelopersCoffee/airo_background_downloads#readme

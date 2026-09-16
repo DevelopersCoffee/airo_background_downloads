@@ -86,9 +86,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
   @override
   Future<DownloadQueueSnapshot> getQueue() async {
     return DownloadQueueSnapshot(
-      entries: [
-        for (final job in _jobs.values) job.snapshot(),
-      ],
+      entries: [for (final job in _jobs.values) job.snapshot()],
     );
   }
 

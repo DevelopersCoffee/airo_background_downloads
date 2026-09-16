@@ -14,8 +14,8 @@ BackgroundDownloads createBackgroundDownloads() {
     return HttpBackgroundDownloads();
   }
   return switch (defaultTargetPlatform) {
-    TargetPlatform.android || TargetPlatform.iOS =>
-      MethodChannelBackgroundDownloads(),
+    TargetPlatform.android ||
+    TargetPlatform.iOS => MethodChannelBackgroundDownloads(),
     _ => HttpBackgroundDownloads(),
   };
 }

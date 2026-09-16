@@ -1,14 +1,20 @@
 # Changelog
 
+## 1.2.0
+
+- **Cross-Platform Transfer Engine Refactor**:
+  - **Portable Intent Policies**: Introduced `AiroDownloadPolicy` (`NetworkPolicy.any/unmetered/connected`, `PowerPolicy.any/charging`, `RetryPolicy.exponential`) hiding platform-specific details.
+  - **Application-Supplied Request ID**: Updated `AiroDownloadRequest` taking explicit application-supplied IDs, custom headers, and intent policies.
+  - **Granular Transfer State Machine**: Added `AiroDownloadStatus` (`queued`, `waitingForNetwork`, `waitingForPower`, `preparing`, `downloading`, `paused`, `verifying`, `processing`, `completed`, `failed`, `cancelled`).
+  - **Capability Discovery**: Added `AiroPlatformCapabilities` for querying platform features.
+  - **Classified Failure Reasons**: Added `AiroFailureReason` (`network`, `timeout`, `server`, `client`, `storage`, `checksum`, `permission`, `unsupported`, `unknown`).
+  - **First-Class Checksums & Processors**: Added `AiroChecksum` (`sha256`, `sha1`, `md5`) and pluggable `AiroDownloadProcessor` pipeline (`AiroChecksumProcessor`, `AiroArchiveProcessor`).
+  - **Storage Requirement Matrix**: Added `AiroStorageRequirement` calculating required bytes across download, temporary, processing, and safety buffer dimensions.
+
 ## 1.1.0
 
-- **Advanced UX & UI Enhancements**: Added `AiroDownloadNotificationController` for persistent lockscreen notification controls and `AiroDownloadQueueVisualizer` for categorizing queue state into Downloading, Queued, Paused, Completed, and Failed with real-time transfer speed & ETA estimation.
-- **Network & Storage Optimization**: Added `AiroNetworkConstraintManager` for Wi-Fi only gating, `AiroStorageConstraintManager` for pre-flight disk space safety buffer verification, and `AiroAutoRetryScheduler` with exponential backoff (5s, 15s, 30s).
-- **File Security & Post-Processing**: Added `AiroDownloadFileEncryptor` stream-based XOR cipher for post-download file encryption and `AiroPostProcessingPipeline` for automated checksum, encryption, and extraction workflows.
-- **Telemetry & Analytics**: Added `AiroDownloadTelemetryLogger` and `AiroDownloadTelemetrySnapshot` for tracking average speed, success/failure rates, retry attempts, and structured failure codes.
+- Added UX queue visualizer, network/storage constraints, file encryption, and telemetry loggers.
 
 ## 1.0.0
 
 - Initial open-source stable release.
-- Progressive background downloader contracts, WorkManager resume policies, and iOS background URLSession integration.
-- Atomic artifact promotion with SHA-256 integrity verification.

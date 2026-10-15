@@ -33,11 +33,15 @@ ContentRangeSpec? parseContentRangeHeader(String? header) {
 }
 
 /// Whether resume is allowed for an existing partial byte count.
+///
+/// Without an expected SHA-256 pin, resume requires a **strong** stored validator
+/// (strong ETag or Last-Modified in `.meta` — never weak `W/` ETags).
 bool resumeIntegrityPinPresent({
   required bool hasExpectedSha256,
-  required bool hasStoredValidator,
+  required bool hasStrongStoredValidator,
 }) {
-  return hasExpectedSha256 || hasStoredValidator;
+  if (hasExpectedSha256) return true;
+  return hasStrongStoredValidator;
 }
 
 /// Fresh downloads (`resumeOffset == 0`) must not accept 206 (B3).

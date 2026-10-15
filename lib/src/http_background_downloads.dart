@@ -259,7 +259,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
           resumeOffset > 0 &&
           resumeIntegrityPinPresent(
             hasExpectedSha256: hasShaPin,
-            hasStoredValidator: hasValidator,
+            hasStrongStoredValidator: hasValidator,
           );
 
       if (resumeOffset > 0 && !maySendRange) {

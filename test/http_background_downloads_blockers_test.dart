@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:airo_background_downloads/airo_background_downloads.dart';
 import 'package:airo_background_downloads/src/http/partial_file_io.dart';
+import 'package:airo_background_downloads/src/http/partial_file_io_posix.dart';
+import 'package:airo_background_downloads/src/http/posix_syscalls.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -453,6 +455,7 @@ void main() {
   });
 
   test('N3 directory fsync failure fails closed and keeps destination', () async {
+    if (!Platform.isLinux && !Platform.isMacOS) return;
     final payload = utf8.encode('n3-dir-fsync-payload');
     final destination = File('${tempDir.path}/dest-n3b.bin');
     await destination.writeAsString('prior');
@@ -467,7 +470,7 @@ void main() {
 
     final downloads = HttpBackgroundDownloads(
       clientFactory: testClient,
-      partialFileIo: _DirectorySyncFailPartialFileIo(PartialFileIo()),
+      partialFileIo: PosixPartialFileIo(syscalls: _FsyncFailSyscalls()),
     );
 
     await downloads.enqueue(
@@ -639,53 +642,15 @@ void main() {
   });
 }
 
-class _DirectorySyncFailPartialFileIo implements PartialFileIo {
-  _DirectorySyncFailPartialFileIo(this._delegate);
-
-  final PartialFileIo _delegate;
-  var _directorySyncAttempts = 0;
+class _FsyncFailSyscalls implements PosixSyscalls {
+  @override
+  int openDirectory(String path, int flags) => 42;
 
   @override
-  PartialPathInspection inspectPath(String path) =>
-      _delegate.inspectPath(path);
+  int fsync(int fd) => -1;
 
   @override
-  PartialPathSafety classifyPartialPath(String path) =>
-      _delegate.classifyPartialPath(path);
-
-  @override
-  void unlinkPartialEntry(String path) => _delegate.unlinkPartialEntry(path);
-
-  @override
-  void prepareDestinationForCommit(String destinationPath) =>
-      _delegate.prepareDestinationForCommit(destinationPath);
-
-  @override
-  Future<void> syncFile(String path) => _delegate.syncFile(path);
-
-  @override
-  Future<void> syncDirectory(String directoryPath) async {
-    _directorySyncAttempts += 1;
-    if (_directorySyncAttempts == 1) {
-      throw FileSystemException(
-        'simulated directory fsync failure',
-        directoryPath,
-      );
-    }
-    return _delegate.syncDirectory(directoryPath);
-  }
-
-  @override
-  Future<PartialFileWriter> openVerifiedPartialWriter(
-    String path, {
-    required bool append,
-    expectedIdentity,
-  }) =>
-      _delegate.openVerifiedPartialWriter(
-        path,
-        append: append,
-        expectedIdentity: expectedIdentity,
-      );
+  int close(int fd) => 0;
 }
 
 class _ThrowingSyncPartialFileIo implements PartialFileIo {

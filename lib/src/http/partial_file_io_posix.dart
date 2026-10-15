@@ -1,31 +1,23 @@
-import 'dart:ffi';
 import 'dart:io';
 
-import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart';
 
 import 'partial_file_identity.dart';
 import 'partial_file_io.dart';
 import 'partial_file_stat.dart';
-import 'partial_file_writer_dart.dart';
 import 'partial_file_writer_posix.dart';
+import 'posix_syscalls.dart';
 
 /// POSIX desktop partial file safety (Linux + macOS).
 base class PosixPartialFileIo implements PartialFileIo {
-  PosixPartialFileIo() {
-    if (Platform.isLinux || Platform.isMacOS) {
-      final lib = DynamicLibrary.open(
-        Platform.isLinux ? 'libc.so.6' : 'libSystem.dylib',
-      );
-      _open = lib.lookupFunction<OpenNative, OpenDart>('open');
-      _fsync = lib.lookupFunction<FsyncNative, FsyncDart>('fsync');
-      _close = lib.lookupFunction<CloseNative, CloseDart>('close');
-    }
-  }
+  PosixPartialFileIo({PosixSyscalls? syscalls})
+    : _syscalls = syscalls ?? LibcPosixSyscalls();
 
-  OpenDart? _open;
-  FsyncDart? _fsync;
-  CloseDart? _close;
+  final PosixSyscalls _syscalls;
   final _uid = platformCurrentUserId();
+
+  @visibleForTesting
+  PosixSyscalls get syscalls => _syscalls;
 
   @override
   PartialPathInspection inspectPath(String path) {
@@ -131,35 +123,27 @@ base class PosixPartialFileIo implements PartialFileIo {
 
   @override
   Future<void> syncDirectory(String directoryPath) async {
-    final open = _open;
-    final fsync = _fsync;
-    final close = _close;
-    if (open == null || fsync == null || close == null) {
+    if (!Platform.isLinux && !Platform.isMacOS) {
       throw FileSystemException(
         'Directory fsync unavailable on this platform',
         directoryPath,
       );
     }
-    final pathPtr = directoryPath.toNativeUtf8();
+    final flags = Platform.isLinux ? _oRdonly | _oDirectory : _oRdonly;
+    final fd = _syscalls.openDirectory(directoryPath, flags);
+    if (fd < 0) {
+      throw FileSystemException('Cannot open directory for fsync', directoryPath);
+    }
     try {
-      final flags = Platform.isLinux ? _oRdonly | _oDirectory : _oRdonly;
-      final fd = open(pathPtr, flags);
-      if (fd < 0) {
-        throw FileSystemException('Cannot open directory for fsync', directoryPath);
-      }
-      try {
-        final result = fsync(fd);
-        if (result != 0) {
-          throw FileSystemException('fsync failed for directory', directoryPath);
-        }
-      } finally {
-        final closed = close(fd);
-        if (closed != 0) {
-          throw FileSystemException('close failed for directory fd', directoryPath);
-        }
+      final result = _syscalls.fsync(fd);
+      if (result != 0) {
+        throw FileSystemException('fsync failed for directory', directoryPath);
       }
     } finally {
-      malloc.free(pathPtr);
+      final closed = _syscalls.close(fd);
+      if (closed != 0) {
+        throw FileSystemException('close failed for directory fd', directoryPath);
+      }
     }
   }
 
@@ -169,21 +153,6 @@ base class PosixPartialFileIo implements PartialFileIo {
     required bool append,
     PartialFileIdentity? expectedIdentity,
   }) async {
-    if (Platform.isMacOS) {
-      final inspection = inspectPath(path);
-      if (append) {
-        if (expectedIdentity != null &&
-            inspection.identity != null &&
-            !expectedIdentity.matches(inspection.identity!)) {
-          throw FileSystemException(
-            'Refusing to append: partial identity changed',
-            path,
-          );
-        }
-        return DartAppendPartialWriter.open(path, inspection);
-      }
-      return DartCreatePartialWriter.createEmpty(this, path);
-    }
     return PosixPartialFileWriter.open(
       path,
       append: append,
@@ -195,10 +164,3 @@ base class PosixPartialFileIo implements PartialFileIo {
 
 const _oRdonly = 0;
 const _oDirectory = 0x00010000;
-
-typedef OpenNative = Int32 Function(Pointer<Utf8>, Int32);
-typedef OpenDart = int Function(Pointer<Utf8>, int);
-typedef FsyncNative = Int32 Function(Int32);
-typedef FsyncDart = int Function(int);
-typedef CloseNative = Int32 Function(Int32);
-typedef CloseDart = int Function(int);

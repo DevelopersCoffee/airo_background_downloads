@@ -98,25 +98,25 @@ void main() {
   });
 
   group('B1 integrity pin', () {
-    test('requires sha256 or stored validator to resume', () {
+    test('requires sha256 or strong stored validator to resume', () {
       expect(
         resumeIntegrityPinPresent(
           hasExpectedSha256: false,
-          hasStoredValidator: false,
+          hasStrongStoredValidator: false,
         ),
         isFalse,
       );
       expect(
         resumeIntegrityPinPresent(
           hasExpectedSha256: true,
-          hasStoredValidator: false,
+          hasStrongStoredValidator: false,
         ),
         isTrue,
       );
       expect(
         resumeIntegrityPinPresent(
           hasExpectedSha256: false,
-          hasStoredValidator: true,
+          hasStrongStoredValidator: true,
         ),
         isTrue,
       );

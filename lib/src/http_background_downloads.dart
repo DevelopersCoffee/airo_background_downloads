@@ -304,32 +304,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         await applyIfRangeFromStore(outgoing, validatorStore, job.request);
         outgoing.headers.set(HttpHeaders.connectionHeader, 'close');
       }
-      assert(() {
-        if (Platform.environment['DEBUG_N2_CANCEL'] == '1') {
-          // ignore: avoid_print
-          print(
-            'N2 debug getUrl artifact=${job.request.artifactId} '
-            'storedOffset=$storedOffset resumeOffset=$resumeOffset '
-            'maySendRange=$maySendRange shaPin=$hasShaPin validator=$hasValidator '
-            'outRange=${outgoing.headers.value(HttpHeaders.rangeHeader)}',
-          );
-        }
-        return true;
-      }());
-
       final response = await outgoing.close();
-      assert(() {
-        if (Platform.environment['DEBUG_N2_CANCEL'] == '1' &&
-            job.request.artifactId == 'n2-interrupted') {
-          // ignore: avoid_print
-          print(
-            'N2 debug response status=${response.statusCode} '
-            'contentRange=${response.headers.value(HttpHeaders.contentRangeHeader)} '
-            'contentLength=${response.contentLength}',
-          );
-        }
-        return true;
-      }());
       _recordResumeCapability(job, response);
 
       if (response.statusCode == 401 || response.statusCode == 403) {
@@ -463,18 +438,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
           expectedIdentity: identityForOpen,
         );
         job.partialOpenFailures = 0;
-      } on FileSystemException catch (e) {
-        assert(() {
-          if (Platform.environment['DEBUG_N2_CANCEL'] == '1' &&
-              job.request.artifactId == 'n2-interrupted') {
-            // ignore: avoid_print
-            print(
-              'N2 debug partial open failed: $e append=$doAppend '
-              'identity=${identityForOpen != null}',
-            );
-          }
-          return true;
-        }());
+      } on FileSystemException {
         job.partialOpenFailures += 1;
         if (job.partialOpenFailures > 4) {
           rethrow;

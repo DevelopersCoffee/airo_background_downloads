@@ -3,7 +3,6 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ROOT="$PWD"
 fail() { echo "MATRIX ERROR: $*" >&2; exit 1; }
 
 run_test() {
@@ -23,17 +22,35 @@ expect_fail() {
   echo "Yes"
 }
 
-echo "Revert matrix (each row must fail its test when guard is reverted):"
+skip_row() {
+  printf '%-22s' "$1"
+  echo "n/a"
+}
+
+UNAME="$(uname -s)"
+IS_LINUX=false
+IS_MAC=false
+case "$UNAME" in
+  Linux) IS_LINUX=true ;;
+  Darwin) IS_MAC=true ;;
+esac
+
+echo "Revert matrix (host=$UNAME; each row must fail its test when guard is reverted):"
 printf '%-22s' "Row"
 echo "Revert-proof"
 
-# 1) nlink
+if ! $IS_LINUX && ! $IS_MAC; then
+  echo "Non-POSIX host: only path-level rows are not run here."
+  exit 0
+fi
+
+# 1) nlink (path)
 sed -i 's/linkCount == 1/linkCount != null/' lib/src/http/partial_file_io.dart
 printf '%-22s' "K1/nlink"
 expect_fail "nlink" lib/src/http/partial_file_io.dart \
   test/k2_security_regressions_test.dart "K2 nlink>1 partial is not safe"
 
-# 2) owner
+# 2) owner (path)
 sed -i 's/ownedByUs &&/true \&\&/' lib/src/http/partial_file_io.dart
 printf '%-22s' "owner"
 expect_fail "owner" lib/src/http/partial_file_io.dart \
@@ -64,16 +81,16 @@ printf '%-22s' "meta"
 expect_fail "meta" lib/src/http/resume_validator_store.dart \
   test/k2_security_regressions_test.dart "K2 mismatched meta identity blocks resume validator reuse"
 
-# 7) exclusive O_NOFOLLOW
+# 7) exclusive O_NOFOLLOW (Linux + Darwin patterns)
 sed -i 's/return _linuxOWronly | _linuxOCreat | _linuxOExcl | _linuxONoFollow;/return _linuxOWronly | _linuxOCreat;/' \
   lib/src/http/partial_file_writer_posix.dart
-sed -i 's/return _darwinOWronly | _darwinOCreat | _darwinOExcl | _darwinONoFollow;/return _darwinOWronly | _darwinOCreat;/' \
+sed -i 's/return _darwinORdwr | _darwinOCreat | _darwinOExcl | _darwinONoFollow;/return _darwinORdwr | _darwinOCreat;/' \
   lib/src/http/partial_file_writer_posix.dart
 printf '%-22s' "exclusive"
 expect_fail "exclusive" lib/src/http/partial_file_writer_posix.dart \
   test/k2_security_regressions_test.dart "K2 O_NOFOLLOW exclusive open refuses symlink partial target"
 
-# 8) pre-commit symlink (line-specific; other guards share the same condition)
+# 8) pre-commit symlink
 sed -i '52s/if (!inspection.isSafeRegularFileOwnedByUs)/if (false)/' \
   lib/src/http/partial_path_guard.dart
 printf '%-22s' "pre-commit"
@@ -87,7 +104,26 @@ printf '%-22s' "connect timeout"
 expect_fail "connect timeout" lib/src/http_background_downloads.dart \
   test/k2_security_regressions_test.dart "K2 connection timeout fails unreachable host quickly"
 
-# 10) openVerified write path (K1): verified open + sanitize must block hardlink resume
+# 10) fd-level nlink (independent of path guard)
+sed -i 's/if (stat.linkCount != 1)/if (false)/' lib/src/http/partial_file_writer_posix.dart
+printf '%-22s' "fd nlink"
+expect_fail "fd nlink" lib/src/http/partial_file_writer_posix.dart \
+  test/partial_file_writer_fd_guard_test.dart "fd-level nlink check rejects hardlinked inode"
+
+# 11) fd-level owner
+sed -i 's/if (stat.ownerUid != currentUid)/if (false)/' lib/src/http/partial_file_writer_posix.dart
+printf '%-22s' "fd owner"
+expect_fail "fd owner" lib/src/http/partial_file_writer_posix.dart \
+  test/partial_file_writer_fd_guard_test.dart "fd-level owner check rejects foreign uid"
+
+# 12) fd-level identity
+sed -i 's/if (expectedIdentity != null && !expectedIdentity.matches(stat))/if (false)/' \
+  lib/src/http/partial_file_writer_posix.dart
+printf '%-22s' "fd identity"
+expect_fail "fd identity" lib/src/http/partial_file_writer_posix.dart \
+  test/partial_file_writer_fd_guard_test.dart "fd-level identity check rejects changed dev/ino"
+
+# 13) openVerified write path (K1 integration)
 python3 - <<'PY'
 from pathlib import Path
 p = Path("lib/src/http/partial_path_guard.dart")

@@ -7,7 +7,7 @@ import 'background_downloads.dart';
 import 'download_models.dart';
 import 'http/partial_file_identity.dart';
 import 'http/partial_file_io.dart';
-import 'http/partial_file_stat.dart';
+import 'http/download_directory_guard.dart';
 import 'http/partial_path_guard.dart';
 import 'http/resume_policy.dart';
 import 'http/resume_validator_store.dart';
@@ -144,9 +144,6 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       partialFileIo: _partialFileIo,
     );
     final parent = destination.parent;
-    if (!parent.existsSync()) {
-      parent.createSync(recursive: true);
-    }
 
     _pathGuard.sanitizeAllForJob(
       destinationPath: destination.path,
@@ -164,6 +161,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     final startedAt = DateTime.now();
 
     try {
+      ensurePrivateDownloadDirectory(parent.path);
       await _downloadBody(job, client, partial, validatorStore, startedAt);
 
       if (job.cancelRequested) {
@@ -448,10 +446,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
   }
 
   void _enforceSizeCap(int nextTotalBytes, _HttpDownloadJob job) {
-    final cap =
-        job.request.expectedBytes ??
-        _maxDownloadBytes ??
-        kDocumentedFallbackMaxDownloadBytes;
+    final cap = job.request.expectedBytes ?? _maxDownloadBytes;
+    if (cap == null) {
+      return;
+    }
     if (nextTotalBytes > cap) {
       throw HttpException('Download exceeded allowed size ($cap bytes)');
     }

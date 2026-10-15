@@ -48,6 +48,7 @@ class PosixPartialFileWriter implements PartialFileWriter {
     required bool append,
     required int currentUid,
     PartialFileIdentity? expectedIdentity,
+    PartialFileIdentity? Function(int fd)? fstatFn,
   }) {
     final lib = DynamicLibrary.open(
       Platform.isLinux ? 'libc.so.6' : 'libSystem.dylib',
@@ -66,7 +67,7 @@ class PosixPartialFileWriter implements PartialFileWriter {
         throw FileSystemException('Cannot open partial without following links', path);
       }
       try {
-        final stat = platformFstat(fd);
+        final stat = (fstatFn ?? platformFstat)(fd);
         if (stat == null) {
           closeFn(fd);
           throw FileSystemException('fstat failed after open', path);

@@ -1,13 +1,10 @@
 import 'dart:ffi';
 import 'dart:io';
-import 'dart:typed_data';
-
 import 'package:ffi/ffi.dart';
 
-import 'partial_file_identity.dart';
+import 'package:flutter/foundation.dart';
 
-/// Documented fallback when neither [expectedBytes] nor [maxDownloadBytes] is set.
-const int kDocumentedFallbackMaxDownloadBytes = 8 * 1024 * 1024 * 1024; // 8 GiB
+import 'partial_file_identity.dart';
 
 /// lstat/fstat without following symlinks. Returns null on failure.
 PartialFileIdentity? platformLstat(String path) {
@@ -46,6 +43,32 @@ int platformCurrentUserId() {
 
 bool get _isLinuxArm64 =>
     Platform.isLinux && Abi.current() == Abi.linuxArm64;
+
+bool get _isDarwinX64 =>
+    Platform.isMacOS && Abi.current() == Abi.macosX64;
+
+typedef _StatPathNative = Int32 Function(Pointer<Utf8>, Pointer<Void>);
+typedef _StatPathDart = int Function(Pointer<Utf8>, Pointer<Void>);
+typedef _StatFdNative = Int32 Function(Int32, Pointer<Void>);
+typedef _StatFdDart = int Function(int, Pointer<Void>);
+
+_StatPathDart? _lookupDarwinLstat(DynamicLibrary lib) {
+  final name = _isDarwinX64 ? 'lstat\$INODE64' : 'lstat';
+  try {
+    return lib.lookupFunction<_StatPathNative, _StatPathDart>(name);
+  } on Object {
+    return null;
+  }
+}
+
+_StatFdDart? _lookupDarwinFstat(DynamicLibrary lib) {
+  final name = _isDarwinX64 ? 'fstat\$INODE64' : 'fstat';
+  try {
+    return lib.lookupFunction<_StatFdNative, _StatFdDart>(name);
+  } on Object {
+    return null;
+  }
+}
 
 PartialFileIdentity? _linuxLstat(String path) {
   final lib = DynamicLibrary.open('libc.so.6');
@@ -113,9 +136,8 @@ PartialFileIdentity? _parseLinuxStat(Pointer<Uint8> buf) {
 
 PartialFileIdentity? _darwinLstat(String path) {
   final lib = DynamicLibrary.open('libSystem.dylib');
-  final lstatFn = lib.lookupFunction<
-      Int32 Function(Pointer<Utf8>, Pointer<Void>),
-      int Function(Pointer<Utf8>, Pointer<Void>)>('lstat');
+  final lstatFn = _lookupDarwinLstat(lib);
+  if (lstatFn == null) return null;
   final pathPtr = path.toNativeUtf8();
   final buf = calloc<Uint8>(_darwinStatBufSize);
   try {
@@ -129,9 +151,8 @@ PartialFileIdentity? _darwinLstat(String path) {
 
 PartialFileIdentity? _darwinFstat(int fd) {
   final lib = DynamicLibrary.open('libSystem.dylib');
-  final fstatFn = lib.lookupFunction<
-      Int32 Function(Int32, Pointer<Void>),
-      int Function(int, Pointer<Void>)>('fstat');
+  final fstatFn = _lookupDarwinFstat(lib);
+  if (fstatFn == null) return null;
   final buf = calloc<Uint8>(_darwinStatBufSize);
   try {
     if (fstatFn(fd, buf.cast()) != 0) return null;
@@ -141,38 +162,86 @@ PartialFileIdentity? _darwinFstat(int fd) {
   }
 }
 
+/// st_mode for a path (POSIX). Returns null when stat fails.
+int? platformPathMode(String path) {
+  if (Platform.isLinux) {
+    return _linuxPathMode(path);
+  }
+  if (Platform.isMacOS) {
+    return _darwinPathMode(path);
+  }
+  return null;
+}
+
+int? _linuxPathMode(String path) {
+  final lib = DynamicLibrary.open('libc.so.6');
+  final lstatFn = _lookupLinuxLstat(lib);
+  if (lstatFn == null) return null;
+  final pathPtr = path.toNativeUtf8();
+  final buf = calloc<Uint8>(_linuxStatBufSize);
+  try {
+    if (lstatFn(pathPtr, buf.cast()) != 0) return null;
+    final view = buf.asTypedList(_linuxStatBufSize).buffer.asByteData();
+    return _isLinuxArm64
+        ? view.getUint32(16, Endian.host)
+        : view.getUint32(24, Endian.host);
+  } finally {
+    calloc.free(buf);
+    malloc.free(pathPtr);
+  }
+}
+
+int? _darwinPathMode(String path) {
+  final lib = DynamicLibrary.open('libSystem.dylib');
+  final lstatFn = _lookupDarwinLstat(lib);
+  if (lstatFn == null) return null;
+  final pathPtr = path.toNativeUtf8();
+  final buf = calloc<Uint8>(_darwinStatBufSize);
+  try {
+    if (lstatFn(pathPtr, buf.cast()) != 0) return null;
+    return _darwinModeFromBuf(buf);
+  } finally {
+    calloc.free(buf);
+    malloc.free(pathPtr);
+  }
+}
+
+int? _darwinModeFromBuf(Pointer<Uint8> buf) {
+  final view = buf.asTypedList(_darwinStatBufSize).buffer.asByteData();
+  return view.getUint16(4, Endian.host);
+}
+
 const _darwinStatBufSize = 144;
+
+/// Darwin `stat` / `stat64` layout (64-bit inode): dev @0, mode u16 @4, nlink u16 @6,
+/// ino u64 @8, uid u32 @16.
+@visibleForTesting
+PartialFileIdentity? parseDarwinStatBytes(List<int> bytes) {
+  if (bytes.length < _darwinStatBufSize) return null;
+  final buf = calloc<Uint8>(bytes.length);
+  try {
+    buf.asTypedList(bytes.length).setAll(0, bytes);
+    return _parseDarwinStat(buf);
+  } finally {
+    calloc.free(buf);
+  }
+}
 
 PartialFileIdentity? _parseDarwinStat(Pointer<Uint8> buf) {
   final view = buf.asTypedList(_darwinStatBufSize).buffer.asByteData();
   final dev = view.getUint32(0, Endian.host);
+  final nlink = view.getUint16(6, Endian.host);
+  if (nlink < 1) {
+    return null;
+  }
   final ino = view.getUint64(8, Endian.host);
-  final nlink = _darwinNlink(view);
-  final uid = _darwinUid(view);
+  final uid = view.getUint32(16, Endian.host);
   return PartialFileIdentity(
     deviceId: dev,
     inode: ino,
     linkCount: nlink,
     ownerUid: uid,
   );
-}
-
-int _darwinNlink(ByteData view) {
-  final at6 = view.getUint16(6, Endian.host);
-  if (at6 >= 1 && at6 <= 4096) return at6;
-  final at8 = view.getUint16(8, Endian.host);
-  if (at8 >= 1 && at8 <= 4096) return at8;
-  return at6 == 0 ? 1 : at6;
-}
-
-int _darwinUid(ByteData view) {
-  final me = platformCurrentUserId();
-  for (final offset in [16, 20, 24, 28, 32, 36]) {
-    if (view.getUint32(offset, Endian.host) == me) {
-      return me;
-    }
-  }
-  return view.getUint32(16, Endian.host);
 }
 
 PartialFileIdentity? _windowsPathStat(String path) {
@@ -212,9 +281,12 @@ PartialFileIdentity? _windowsPathStat(String path) {
       final view = info.asTypedList(52).buffer.asByteData();
       final nlink = view.getUint32(40, Endian.host);
       // Windows has no POSIX uid on files; owner checks are not enforced (see PartialFileIo docs).
+      final indexLow = view.getUint32(48, Endian.host);
+      final indexHigh = view.getUint32(44, Endian.host);
+      final inode = (indexHigh << 32) | indexLow;
       return PartialFileIdentity(
         deviceId: view.getUint32(28, Endian.host),
-        inode: view.getUint32(44, Endian.host),
+        inode: inode,
         linkCount: nlink,
         ownerUid: 0,
       );

@@ -316,6 +316,18 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       }());
 
       final response = await outgoing.close();
+      assert(() {
+        if (Platform.environment['DEBUG_N2_CANCEL'] == '1' &&
+            job.request.artifactId == 'n2-interrupted') {
+          // ignore: avoid_print
+          print(
+            'N2 debug response status=${response.statusCode} '
+            'contentRange=${response.headers.value(HttpHeaders.contentRangeHeader)} '
+            'contentLength=${response.contentLength}',
+          );
+        }
+        return true;
+      }());
       _recordResumeCapability(job, response);
 
       if (response.statusCode == 401 || response.statusCode == 403) {
@@ -372,15 +384,18 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
           Platform.isMacOS &&
           maySendRange &&
           resumeOffset > 0 &&
-          response.statusCode == HttpStatus.partialContent &&
-          job.request.expectedBytes != null &&
-          resumeOffset < job.request.expectedBytes!) {
-        parsedRange = ContentRangeSpec(
-          start: resumeOffset,
-          end: job.request.expectedBytes! - 1,
-          total: job.request.expectedBytes,
-        );
-        append = true;
+          response.statusCode == HttpStatus.ok &&
+          job.request.expectedBytes != null) {
+        final tailBytes = job.request.expectedBytes! - resumeOffset;
+        final responseLen = _normalizedContentLength(response);
+        if (tailBytes > 0 && responseLen == tailBytes) {
+          parsedRange = ContentRangeSpec(
+            start: resumeOffset,
+            end: job.request.expectedBytes! - 1,
+            total: job.request.expectedBytes,
+          );
+          append = true;
+        }
       }
 
       if (resumeOffset > 0 && !append) {

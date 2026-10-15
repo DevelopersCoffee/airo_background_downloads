@@ -66,7 +66,7 @@ void main() {
   });
 
   test('close still closes fd when fsync fails', () async {
-    if (!Platform.isLinux && !Platform.isMacOS) return;
+    if (!Platform.isLinux) return;
     final base = Directory.systemTemp.createTempSync('partial-fsync-');
     addTearDown(() => base.deleteSync(recursive: true));
     final path = '${base.path}/fsync-fail.partial';

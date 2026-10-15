@@ -342,8 +342,13 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         continue;
       }
 
-      final parsedRange = parseContentRangeHeader(
+      var parsedRange = parseContentRangeHeader(
         response.headers.value(HttpHeaders.contentRangeHeader),
+      );
+      parsedRange ??= _syntheticContentRangeFor206(
+        response: response,
+        resumeOffset: resumeOffset,
+        expectedBytes: job.request.expectedBytes,
       );
 
       var append =
@@ -557,6 +562,25 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       return parsedRange.segmentLength;
     }
     return _normalizedContentLength(response);
+  }
+
+  ContentRangeSpec? _syntheticContentRangeFor206({
+    required HttpClientResponse response,
+    required int resumeOffset,
+    required int? expectedBytes,
+  }) {
+    if (response.statusCode != HttpStatus.partialContent) return null;
+    if (resumeOffset <= 0 || expectedBytes == null) return null;
+    final total = expectedBytes;
+    final len = _normalizedContentLength(response);
+    if (len == null || len <= 0) return null;
+    final segmentLen = len == total ? total - resumeOffset : len;
+    if (segmentLen <= 0 || resumeOffset + segmentLen != total) return null;
+    return ContentRangeSpec(
+      start: resumeOffset,
+      end: total - 1,
+      total: total,
+    );
   }
 
   void _recordResumeCapability(_HttpDownloadJob job, HttpClientResponse response) {

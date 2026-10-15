@@ -4,20 +4,39 @@ import 'partial_file_io_impl.dart' as impl;
 abstract class PartialFileIo {
   factory PartialFileIo() => impl.createPartialFileIo();
 
-  /// Whether [path] is a regular file we own with a single link (B4/B5).
+  PartialPathInspection inspectPath(String path);
+
   PartialPathSafety classifyPartialPath(String path);
 
-  /// Removes a symlink or hardlink entry at [path] without following it.
   void unlinkPartialEntry(String path);
 
-  /// Ensures the destination path is not a symlink before rename (B5).
   void prepareDestinationForCommit(String destinationPath);
 
-  /// Fsync file contents before rename (B7).
   Future<void> syncFile(String path);
 
-  /// Fsync parent directory after rename; no-op on Windows (B7).
   Future<void> syncDirectory(String directoryPath);
+}
+
+class PartialPathInspection {
+  const PartialPathInspection({
+    required this.isAbsent,
+    required this.isSymlink,
+    required this.isRegularFile,
+    required this.linkCount,
+    required this.ownedByUs,
+  });
+
+  final bool isAbsent;
+  final bool isSymlink;
+  final bool isRegularFile;
+  final int? linkCount;
+  final bool ownedByUs;
+
+  bool get isSafeRegularFileOwnedByUs =>
+      isRegularFile &&
+      !isSymlink &&
+      (linkCount == null || linkCount == 1) &&
+      ownedByUs;
 }
 
 class PartialPathSafety {
@@ -26,9 +45,6 @@ class PartialPathSafety {
     required this.shouldUnlinkEntry,
   });
 
-  /// Safe to open [path] for append.
   final bool mayAppend;
-
-  /// Remove the path entry (symlink / hardlink name) and recreate fresh.
   final bool shouldUnlinkEntry;
 }

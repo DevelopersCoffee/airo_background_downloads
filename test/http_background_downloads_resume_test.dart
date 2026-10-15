@@ -240,10 +240,6 @@ void main() {
   test('If-Range validator captured from first response enables resume', () async {
     final payload = utf8.encode('if-range-resume-validator-test-bytes');
     final destination = File('${tempDir.path}/etag.bin');
-    final partial = File('${destination.path}.partial');
-    final meta = File('${partial.path}.meta');
-    await partial.writeAsBytes(payload.sublist(0, 8));
-    await meta.writeAsString('{"etag":"\\"v1\\""}');
 
     final url = await bindServer((request) async {
       expect(
@@ -265,6 +261,13 @@ void main() {
         ..add(payload.sublist(8))
         ..close();
     });
+
+    final partial = File('${destination.path}.partial');
+    final meta = File('${partial.path}.meta');
+    await partial.writeAsBytes(payload.sublist(0, 8));
+    await meta.writeAsString(
+      '{"source":"$url","expectedBytes":${payload.length},"etag":"\\"v1\\""}',
+    );
 
     final downloads = HttpBackgroundDownloads(clientFactory: testClient);
     await downloads.enqueue(

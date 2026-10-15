@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:ffi/ffi.dart';
 
 import 'partial_file_io.dart';
+import 'partial_file_stat.dart';
 
 base class PosixPartialFileIo implements PartialFileIo {
   PosixPartialFileIo() {
@@ -20,14 +21,56 @@ base class PosixPartialFileIo implements PartialFileIo {
   OpenDart? _open;
   FsyncDart? _fsync;
   CloseDart? _close;
+  final _uid = platformCurrentUserId();
+
+  @override
+  PartialPathInspection inspectPath(String path) {
+    final type = FileSystemEntity.typeSync(path, followLinks: false);
+    if (type == FileSystemEntityType.notFound) {
+      return const PartialPathInspection(
+        isAbsent: true,
+        isSymlink: false,
+        isRegularFile: false,
+        linkCount: null,
+        ownedByUs: false,
+      );
+    }
+    if (type == FileSystemEntityType.link) {
+      return const PartialPathInspection(
+        isAbsent: false,
+        isSymlink: true,
+        isRegularFile: false,
+        linkCount: null,
+        ownedByUs: false,
+      );
+    }
+    if (type != FileSystemEntityType.file) {
+      return const PartialPathInspection(
+        isAbsent: false,
+        isSymlink: false,
+        isRegularFile: false,
+        linkCount: null,
+        ownedByUs: false,
+      );
+    }
+    final stat = platformLinkCountAndOwner(path);
+    final owned = stat == null || stat.uid == _uid;
+    return PartialPathInspection(
+      isAbsent: false,
+      isSymlink: false,
+      isRegularFile: true,
+      linkCount: stat?.nlink,
+      ownedByUs: owned,
+    );
+  }
 
   @override
   PartialPathSafety classifyPartialPath(String path) {
-    final type = FileSystemEntity.typeSync(path, followLinks: false);
-    if (type == FileSystemEntityType.notFound) {
+    final inspection = inspectPath(path);
+    if (inspection.isAbsent) {
       return const PartialPathSafety(mayAppend: false, shouldUnlinkEntry: false);
     }
-    if (type != FileSystemEntityType.file) {
+    if (!inspection.isSafeRegularFileOwnedByUs) {
       return const PartialPathSafety(mayAppend: false, shouldUnlinkEntry: true);
     }
     return const PartialPathSafety(mayAppend: true, shouldUnlinkEntry: false);
@@ -61,9 +104,10 @@ base class PosixPartialFileIo implements PartialFileIo {
 
   @override
   Future<void> syncFile(String path) async {
-    final file = File(path);
-    if (!await file.exists()) return;
-    final raf = await file.open(mode: FileMode.read);
+    if (!File(path).existsSync()) {
+      throw FileSystemException('Cannot fsync missing file', path);
+    }
+    final raf = await File(path).open(mode: FileMode.read);
     try {
       await raf.flush();
     } finally {
@@ -76,16 +120,29 @@ base class PosixPartialFileIo implements PartialFileIo {
     final open = _open;
     final fsync = _fsync;
     final close = _close;
-    if (open == null || fsync == null || close == null) return;
+    if (open == null || fsync == null || close == null) {
+      throw FileSystemException(
+        'Directory fsync unavailable on this platform',
+        directoryPath,
+      );
+    }
     final pathPtr = directoryPath.toNativeUtf8();
     try {
       final flags = Platform.isLinux ? _oRdonly | _oDirectory : _oRdonly;
       final fd = open(pathPtr, flags);
-      if (fd < 0) return;
+      if (fd < 0) {
+        throw FileSystemException('Cannot open directory for fsync', directoryPath);
+      }
       try {
-        fsync(fd);
+        final result = fsync(fd);
+        if (result != 0) {
+          throw FileSystemException('fsync failed for directory', directoryPath);
+        }
       } finally {
-        close(fd);
+        final closed = close(fd);
+        if (closed != 0) {
+          throw FileSystemException('close failed for directory fd', directoryPath);
+        }
       }
     } finally {
       malloc.free(pathPtr);

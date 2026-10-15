@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:ffi/ffi.dart';
 
 import 'partial_file_io.dart';
+import 'partial_file_stat.dart';
 
 base class WindowsPartialFileIo implements PartialFileIo {
   WindowsPartialFileIo() {
@@ -23,7 +24,7 @@ base class WindowsPartialFileIo implements PartialFileIo {
   late final FlushFileBuffersDart _flushFileBuffers;
   late final CloseHandleDart _closeHandle;
 
-  static const _genericRead = 0x80000000;
+  static const _genericWrite = 0x40000000;
   static const _fileShareRead = 0x00000001;
   static const _fileShareWrite = 0x00000002;
   static const _openExisting = 3;
@@ -31,12 +32,52 @@ base class WindowsPartialFileIo implements PartialFileIo {
   static const _invalidHandle = -1;
 
   @override
-  PartialPathSafety classifyPartialPath(String path) {
+  PartialPathInspection inspectPath(String path) {
     final type = FileSystemEntity.typeSync(path, followLinks: false);
     if (type == FileSystemEntityType.notFound) {
-      return const PartialPathSafety(mayAppend: false, shouldUnlinkEntry: false);
+      return const PartialPathInspection(
+        isAbsent: true,
+        isSymlink: false,
+        isRegularFile: false,
+        linkCount: null,
+        ownedByUs: false,
+      );
+    }
+    if (type == FileSystemEntityType.link) {
+      return const PartialPathInspection(
+        isAbsent: false,
+        isSymlink: true,
+        isRegularFile: false,
+        linkCount: null,
+        ownedByUs: false,
+      );
     }
     if (type != FileSystemEntityType.file) {
+      return const PartialPathInspection(
+        isAbsent: false,
+        isSymlink: false,
+        isRegularFile: false,
+        linkCount: null,
+        ownedByUs: false,
+      );
+    }
+    final stat = platformLinkCountAndOwner(path);
+    return PartialPathInspection(
+      isAbsent: false,
+      isSymlink: false,
+      isRegularFile: true,
+      linkCount: stat?.nlink,
+      ownedByUs: true,
+    );
+  }
+
+  @override
+  PartialPathSafety classifyPartialPath(String path) {
+    final inspection = inspectPath(path);
+    if (inspection.isAbsent) {
+      return const PartialPathSafety(mayAppend: false, shouldUnlinkEntry: false);
+    }
+    if (!inspection.isSafeRegularFileOwnedByUs) {
       return const PartialPathSafety(mayAppend: false, shouldUnlinkEntry: true);
     }
     return const PartialPathSafety(mayAppend: true, shouldUnlinkEntry: false);
@@ -70,24 +111,35 @@ base class WindowsPartialFileIo implements PartialFileIo {
 
   @override
   Future<void> syncFile(String path) async {
-    final handle = _openReadHandle(path);
-    if (handle == _invalidHandle) return;
+    if (!File(path).existsSync()) {
+      throw FileSystemException('Cannot fsync missing file', path);
+    }
+    final handle = _openWriteHandle(path);
+    if (handle == _invalidHandle) {
+      throw FileSystemException('Cannot open file for fsync', path);
+    }
     try {
-      _flushFileBuffers(handle);
+      final flushed = _flushFileBuffers(handle);
+      if (flushed == 0) {
+        throw FileSystemException('FlushFileBuffers failed', path);
+      }
     } finally {
-      _closeHandle(handle);
+      final closed = _closeHandle(handle);
+      if (closed == 0) {
+        throw FileSystemException('CloseHandle failed after fsync', path);
+      }
     }
   }
 
   @override
   Future<void> syncDirectory(String directoryPath) async {}
 
-  int _openReadHandle(String path) {
+  int _openWriteHandle(String path) {
     final pathPtr = path.toNativeUtf16();
     try {
       return _createFileW(
         pathPtr,
-        _genericRead,
+        _genericWrite,
         _fileShareRead | _fileShareWrite,
         nullptr,
         _openExisting,

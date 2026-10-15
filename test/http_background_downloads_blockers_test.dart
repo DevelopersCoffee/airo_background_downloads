@@ -251,6 +251,197 @@ void main() {
     expect(await destination.readAsBytes(), equals(payload));
   });
 
+  test('N1 dangling partial.work symlink is not followed during download', () async {
+    final payload = utf8.encode('n1-exclusive-partial-write-test-payload');
+    final destination = File('${tempDir.path}/n1.bin');
+    final outsideDir = await Directory.systemTemp.createTemp('n1-outside-');
+    final outsideTarget = '${outsideDir.path}/outside_target';
+    await Link('${destination.path}.partial.work').create(outsideTarget);
+
+    final url = await bindServer((request) async {
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..contentLength = payload.length
+        ..add(payload)
+        ..close();
+    });
+
+    final downloads = HttpBackgroundDownloads(clientFactory: testClient);
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'n1-work-symlink',
+        source: url,
+        destinationPath: destination.path,
+        expectedBytes: payload.length,
+      ),
+    );
+
+    final terminal = await waitForTerminal(downloads, 'n1-work-symlink');
+    expect(terminal.status, DownloadStatus.completed);
+    expect(
+      FileSystemEntity.typeSync(destination.path, followLinks: false),
+      FileSystemEntityType.file,
+    );
+    expect(await destination.readAsBytes(), equals(payload));
+    expect(File(outsideTarget).existsSync(), isFalse);
+    await outsideDir.delete(recursive: true);
+  });
+
+  test('N2 cancel mid-stream resumes with Range on re-enqueue', () async {
+    final totalSize = 100000;
+    final payload = List<int>.generate(totalSize, (index) => index % 251);
+    final destination = File('${tempDir.path}/resume-interrupted.bin');
+    final requestLog = <String?>[];
+
+    var requestCount = 0;
+    final url = await bindServer((request) async {
+      requestCount += 1;
+      requestLog.add(request.headers.value(HttpHeaders.rangeHeader));
+      request.response.headers.set(HttpHeaders.etagHeader, '"stream-v1"');
+      if (requestCount == 1) {
+        expect(request.headers.value(HttpHeaders.rangeHeader), isNull);
+        request.response
+          ..statusCode = HttpStatus.ok
+          ..contentLength = totalSize
+          ..add(payload.sublist(0, 60000));
+        try {
+          await Future<void>.delayed(const Duration(hours: 1));
+        } on Object {
+          // Client closed the connection after cancel.
+        }
+        await request.response.close();
+        return;
+      }
+      expect(
+        request.headers.value(HttpHeaders.rangeHeader),
+        equals('bytes=60000-'),
+      );
+      expect(
+        request.headers.value(HttpHeaders.ifRangeHeader),
+        equals('"stream-v1"'),
+      );
+      final remainder = payload.sublist(60000);
+      request.response
+        ..statusCode = HttpStatus.partialContent
+        ..headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes 60000-${totalSize - 1}/$totalSize',
+        )
+        ..contentLength = remainder.length
+        ..add(remainder)
+        ..close();
+    });
+
+    final downloads = HttpBackgroundDownloads(clientFactory: testClient);
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'n2-interrupted',
+        source: url,
+        destinationPath: destination.path,
+        expectedBytes: totalSize,
+        expectedSha256: sha256Hex(payload),
+      ),
+    );
+
+    await downloads.events.firstWhere(
+      (event) =>
+          event.artifactId == 'n2-interrupted' &&
+          event.downloadedBytes >= 60000,
+    );
+    await downloads.cancel('n2-interrupted');
+
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'n2-interrupted',
+        source: url,
+        destinationPath: destination.path,
+        expectedBytes: totalSize,
+        expectedSha256: sha256Hex(payload),
+      ),
+    );
+
+    final terminal = await waitForTerminal(downloads, 'n2-interrupted');
+    expect(terminal.status, DownloadStatus.completed);
+    expect(await destination.readAsBytes(), equals(payload));
+    expect(requestCount, equals(2));
+    expect(requestLog[1], equals('bytes=60000-'));
+  });
+
+  test('N3 directory fsync failure fails closed and keeps destination', () async {
+    final payload = utf8.encode('n3-dir-fsync-payload');
+    final destination = File('${tempDir.path}/dest-n3b.bin');
+    await destination.writeAsString('prior');
+
+    final url = await bindServer((request) async {
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..contentLength = payload.length
+        ..add(payload)
+        ..close();
+    });
+
+    final downloads = HttpBackgroundDownloads(
+      clientFactory: testClient,
+      partialFileIo: _DirectorySyncFailPartialFileIo(PartialFileIo()),
+    );
+
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'n3-dir-fsync',
+        source: url,
+        destinationPath: destination.path,
+        expectedBytes: payload.length,
+      ),
+    );
+
+    final terminal = await waitForTerminal(downloads, 'n3-dir-fsync');
+    expect(terminal.status, DownloadStatus.failed);
+    expect(await destination.readAsString(), equals('prior'));
+  });
+
+  test('N4 symlinked partial entry is unlinked before streaming', () async {
+    final victim = File('${tempDir.path}/victim-prefix.bin');
+    await victim.writeAsBytes(List<int>.filled(32, 7));
+    final destination = File('${tempDir.path}/dest-n4.bin');
+    final partial = File('${destination.path}.partial');
+    await Link(partial.path).create(victim.path);
+
+    final payload = utf8.encode('n4-full-payload-not-prefix-bytes');
+    final url = await bindServer((request) async {
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..contentLength = payload.length
+        ..add(payload)
+        ..close();
+    });
+
+    final downloads = HttpBackgroundDownloads(clientFactory: testClient);
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'n4-symlink-unlink',
+        source: url,
+        destinationPath: destination.path,
+        expectedBytes: payload.length,
+      ),
+    );
+
+    await downloads.events.firstWhere(
+      (event) =>
+          event.artifactId == 'n4-symlink-unlink' &&
+          event.downloadedBytes > 0,
+    );
+    expect(
+      FileSystemEntity.typeSync(partial.path, followLinks: false),
+      isNot(FileSystemEntityType.link),
+    );
+    expect(await victim.length(), equals(32));
+
+    final terminal = await waitForTerminal(downloads, 'n4-symlink-unlink');
+    expect(terminal.status, DownloadStatus.completed);
+    expect(await victim.length(), equals(32));
+    expect(await destination.readAsBytes(), equals(payload));
+  });
+
   test('B5 symlinked partial does not append through to victim', () async {
     final victim = File('${tempDir.path}/victim4.bin');
     await victim.writeAsBytes(utf8.encode('victim-original'));
@@ -352,10 +543,52 @@ void main() {
   });
 }
 
+class _DirectorySyncFailPartialFileIo implements PartialFileIo {
+  _DirectorySyncFailPartialFileIo(this._delegate);
+
+  final PartialFileIo _delegate;
+  var _directorySyncAttempts = 0;
+
+  @override
+  PartialPathInspection inspectPath(String path) =>
+      _delegate.inspectPath(path);
+
+  @override
+  PartialPathSafety classifyPartialPath(String path) =>
+      _delegate.classifyPartialPath(path);
+
+  @override
+  void unlinkPartialEntry(String path) => _delegate.unlinkPartialEntry(path);
+
+  @override
+  void prepareDestinationForCommit(String destinationPath) =>
+      _delegate.prepareDestinationForCommit(destinationPath);
+
+  @override
+  Future<void> syncFile(String path) => _delegate.syncFile(path);
+
+  @override
+  Future<void> syncDirectory(String directoryPath) async {
+    _directorySyncAttempts += 1;
+    if (_directorySyncAttempts == 1) {
+      throw FileSystemException(
+        'simulated directory fsync failure',
+        directoryPath,
+      );
+    }
+    return _delegate.syncDirectory(directoryPath);
+  }
+}
+
 class _ThrowingSyncPartialFileIo implements PartialFileIo {
   _ThrowingSyncPartialFileIo(this._delegate);
 
   final PartialFileIo _delegate;
+  var _partialSyncCount = 0;
+
+  @override
+  PartialPathInspection inspectPath(String path) =>
+      _delegate.inspectPath(path);
 
   @override
   PartialPathSafety classifyPartialPath(String path) =>
@@ -370,8 +603,11 @@ class _ThrowingSyncPartialFileIo implements PartialFileIo {
 
   @override
   Future<void> syncFile(String path) async {
-    if (path.endsWith('.partial') && !path.endsWith('.partial.work')) {
-      throw StateError('simulated fsync failure');
+    if (path.endsWith('.partial')) {
+      _partialSyncCount += 1;
+      if (_partialSyncCount >= 2) {
+        throw StateError('simulated fsync failure');
+      }
     }
     return _delegate.syncFile(path);
   }

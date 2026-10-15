@@ -368,6 +368,21 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
             ),
           );
 
+      if (!append &&
+          Platform.isMacOS &&
+          maySendRange &&
+          resumeOffset > 0 &&
+          response.statusCode == HttpStatus.partialContent &&
+          job.request.expectedBytes != null &&
+          resumeOffset < job.request.expectedBytes!) {
+        parsedRange = ContentRangeSpec(
+          start: resumeOffset,
+          end: job.request.expectedBytes! - 1,
+          total: job.request.expectedBytes,
+        );
+        append = true;
+      }
+
       if (resumeOffset > 0 && !append) {
         if (response.statusCode == HttpStatus.ok) {
           _partialFileIo.unlinkPartialEntry(partial.path);

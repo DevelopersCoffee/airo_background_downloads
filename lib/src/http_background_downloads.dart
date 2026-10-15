@@ -69,6 +69,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     }
 
     final job = _HttpDownloadJob(request: request);
+    job.runCycle = Completer<void>();
     _jobs[request.artifactId] = job;
     _emit(job.queued());
     unawaited(_run(job));
@@ -139,7 +140,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
   Future<void> _run(_HttpDownloadJob job) async {
     if (job.cancelRequested) return;
 
-    job.runCycle = Completer<void>();
+    job.runCycle ??= Completer<void>();
     try {
       await _runDownload(job);
     } finally {

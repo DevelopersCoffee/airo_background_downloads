@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.1
+
+- **Desktop HTTP downloads**: Resume partial files with `Range: bytes=N-`, append on valid `206`/`Content-Range`, and restart cleanly when the server returns `200` or a mismatched range.
+- **Integrity**: `AiroChecksumProcessor` now streams SHA-256/SHA-1/MD5 digests via `package:crypto`; desktop finalize verifies SHA-256 on `.partial` before an atomic rename (Windows-safe replace).
+- **Requests**: `DownloadArtifactRequest.headers` are forwarded on outgoing HTTP requests (merged with `Range`).
+
 ## 1.2.0
 
 - **Cross-Platform Transfer Engine Refactor**:

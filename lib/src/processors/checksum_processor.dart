@@ -1,7 +1,7 @@
 import 'dart:io';
 
-import '../models/checksum.dart';
 import 'processor.dart';
+import 'streaming_checksum.dart';
 
 /// Processor verifying checksum integrity post-download.
 class AiroChecksumProcessor implements AiroDownloadProcessor {
@@ -26,16 +26,13 @@ class AiroChecksumProcessor implements AiroDownloadProcessor {
       );
     }
 
-    if (checksum.algorithm == AiroChecksumAlgorithm.sha256) {
-      final bytes = await file.readAsBytes();
-      // SHA-256 byte check
-      if (bytes.isEmpty) {
-        return AiroProcessorResult(
-          success: false,
-          outputFilePath: context.filePath,
-          errorMessage: 'Empty file for checksum verification',
-        );
-      }
+    if (!await fileMatchesChecksum(file, checksum)) {
+      return AiroProcessorResult(
+        success: false,
+        outputFilePath: context.filePath,
+        errorMessage:
+            '${checksum.algorithm.name} checksum did not match expected value',
+      );
     }
 
     return AiroProcessorResult(success: true, outputFilePath: context.filePath);

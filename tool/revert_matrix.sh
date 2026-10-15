@@ -245,4 +245,38 @@ printf '%-22s' "E3 temp private"
 expect_fail "E3 temp private" lib/src/http/download_directory_guard.dart \
   test/download_directory_guard_test.dart "system temp destination uses private .airo_partials leaf"
 
+# 17) F1 — 200 to Range must not append (macOS tail splice)
+sed_inplace 's/final parsedRange = parse/var parsedRange = parse/' \
+  lib/src/http_background_downloads.dart
+python3 - <<'PY'
+from pathlib import Path
+p = Path("lib/src/http_background_downloads.dart")
+text = p.read_text()
+anchor = "      if (resumeOffset > 0 && !append) {"
+insert = """      if (!append &&
+          maySendRange &&
+          resumeOffset > 0 &&
+          response.statusCode == HttpStatus.ok &&
+          job.request.expectedBytes != null) {
+        final tailBytes = job.request.expectedBytes! - resumeOffset;
+        final responseLen = _normalizedContentLength(response);
+        if (tailBytes > 0 && responseLen == tailBytes) {
+          parsedRange = ContentRangeSpec(
+            start: resumeOffset,
+            end: job.request.expectedBytes! - 1,
+            total: job.request.expectedBytes,
+          );
+          append = true;
+        }
+      }
+
+      if (resumeOffset > 0 && !append) {"""
+if anchor not in text:
+    raise SystemExit("revert_matrix: F1 anchor not found")
+p.write_text(text.replace(anchor, insert, 1))
+PY
+printf '%-22s' "F1 range 200 splice"
+expect_fail "F1 range 200 splice" lib/src/http_background_downloads.dart \
+  test/http_background_downloads_blockers_test.dart "F1 200 response to Range request never splices"
+
 echo "Done."

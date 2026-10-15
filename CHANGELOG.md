@@ -5,6 +5,8 @@
 - **Desktop-only HTTP**: `HttpBackgroundDownloads` throws on Android/iOS; use `BackgroundDownloads.platform()` for native engines.
 - **Download size**: No implicit 8 GiB cap — set `expectedBytes` and/or `maxDownloadBytes` to bound downloads.
 - **POSIX variadic FFI**: `open(2)` and `fcntl(2)` use Dart `VarArgs` bindings so `O_CREAT` mode `0600` is correct on Apple arm64 (fixes macOS partial permission workarounds).
+- **Resume protocol (F1)**: No macOS-only append of `200 OK` or synthetic `206` without `Content-Range`; `200` to a `Range` request always restarts from byte 0.
+- **Commit**: `fchmod(0644)` on the partial fd before rename; explicit macOS `F_FULLFSYNC` via fd in `syncFile`; empty `.airo_partials` removed after successful commit.
 - **Partial storage (E2/E3)**: Partials and `.meta` files live under `<dest-dir>/.airo_partials/` (0700 leaf only); no chmod of existing user or temp directories; `/tmp` and system temp use the same checks.
 - **macOS / Darwin stat**: `lstat$INODE64` / `fstat$INODE64` on 64-bit macOS; Intel macOS **not claimed** when `macos-13` CI is queued or optional.
 - **Partial I/O**: fd-level `O_NOFOLLOW` create/append with `fstat` identity checks on Linux and macOS.

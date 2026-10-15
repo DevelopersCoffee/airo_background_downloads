@@ -5,6 +5,8 @@ import 'package:airo_background_downloads/airo_background_downloads.dart';
 import 'package:airo_background_downloads/src/http/partial_file_io.dart';
 import 'package:airo_background_downloads/src/http/partial_file_io_posix.dart';
 import 'package:airo_background_downloads/src/http/download_directory_guard.dart';
+import 'package:airo_background_downloads/src/http/partial_file_stat.dart';
+import 'package:airo_background_downloads/src/http/partial_storage_paths.dart';
 import 'package:airo_background_downloads/src/http/posix_file_read.dart';
 import 'package:airo_background_downloads/src/http/posix_syscalls.dart';
 import 'package:crypto/crypto.dart';
@@ -178,6 +180,100 @@ void main() {
     expect(terminal.status, DownloadStatus.completed);
     expect(await _readFileBytes(destination.path), equals(payload));
     expect(requestCount, equals(2));
+  });
+
+  test('committed destination uses mode 0644 and removes empty partial storage', () async {
+    if (!Platform.isLinux && !Platform.isMacOS) return;
+    final payload = utf8.encode('committed-mode-0644-payload');
+    final destination = File('${tempDir.path}/mode644.bin');
+    final url = await bindServer((request) async {
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..contentLength = payload.length
+        ..add(payload)
+        ..close();
+    });
+
+    final downloads = HttpBackgroundDownloads(clientFactory: testClient);
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'mode-644',
+        source: url,
+        destinationPath: destination.path,
+        expectedBytes: payload.length,
+      ),
+    );
+    final terminal = await waitForTerminal(downloads, 'mode-644');
+    expect(terminal.status, DownloadStatus.completed);
+    final mode = platformPathMode(destination.path);
+    expect(mode, isNotNull);
+    expect(mode! & 0x1FF, equals(420));
+    final storage = PartialStoragePaths.forDestination(destination.path).storageDirectory;
+    expect(Directory(storage).existsSync(), isFalse);
+  });
+
+  test('F1 200 response to Range request never splices onto partial prefix', () async {
+    const totalSize = 100000;
+    const resumeAt = 60000;
+    final payload = List<int>.generate(totalSize, (index) => index % 251);
+    final destination = File('${tempDir.path}/f1-range-200.bin');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
+    await partial.writeAsBytes(List.filled(resumeAt, 0x41));
+
+    final url = await bindServer((request) async {
+      final range = request.headers.value(HttpHeaders.rangeHeader);
+      if (range != null && range.startsWith('bytes=$resumeAt')) {
+        request.response
+          ..statusCode = HttpStatus.ok
+          ..contentLength = totalSize - resumeAt
+          ..add(List.filled(totalSize - resumeAt, 0x5A))
+          ..close();
+        return;
+      }
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..contentLength = totalSize
+        ..add(payload)
+        ..close();
+    });
+
+    await File('${partial.path}.meta').writeAsString(
+      jsonEncode({
+        'source': url.toString(),
+        'expectedBytes': totalSize,
+        'etag': '"f1-strong"',
+        'resumeByteOffset': resumeAt,
+      }),
+    );
+
+    final downloads = HttpBackgroundDownloads(clientFactory: testClient);
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'f1-range-200',
+        source: url,
+        destinationPath: destination.path,
+        expectedBytes: totalSize,
+      ),
+    );
+
+    final terminal = await waitForTerminal(downloads, 'f1-range-200');
+    if (destination.existsSync()) {
+      final bytes = await _readFileBytes(destination.path);
+      expect(
+        bytes.length,
+        isNot(equals(totalSize)),
+        reason: 'must not commit a spliced 100000-byte file',
+      );
+      if (bytes.length == totalSize) {
+        expect(bytes.sublist(resumeAt), isNot(equals(List.filled(40000, 0x5A))));
+      }
+    }
+    if (terminal.status == DownloadStatus.completed) {
+      expect(await _readFileBytes(destination.path), equals(payload));
+    } else {
+      expect(terminal.status, DownloadStatus.failed);
+    }
   });
 
   test('B3 fresh download rejects 206 without Range request', () async {

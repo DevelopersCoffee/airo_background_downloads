@@ -3,6 +3,9 @@ import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 
+import 'partial_file_identity.dart';
+import 'partial_file_stat.dart';
+
 DynamicLibrary posixLib() {
   return DynamicLibrary.open(
     Platform.isLinux ? 'libc.so.6' : 'libSystem.dylib',
@@ -65,6 +68,40 @@ int posixFchmod(int fd, int mode) {
   return fchmodFn(fd, mode);
 }
 
+/// Current process umask without permanently changing it.
+int posixCurrentUmask() {
+  final umaskFn = posixLib().lookupFunction<
+      Int32 Function(Int32),
+      int Function(int)>('umask');
+  final previous = umaskFn(0);
+  umaskFn(previous);
+  return previous & 511; // 0777
+}
+
+/// Mode for committed regular files: `0666 & ~umask`.
+int posixCommittedRegularFileMode() =>
+    (438 & ~posixCurrentUmask()) & 511; // 0666 & ~umask & 0777
+
+void _posixCloseChecked(int fd, String path) {
+  final closeFn = posixLib().lookupFunction<
+      Int32 Function(Int32),
+      int Function(int)>('close');
+  if (closeFn(fd) != 0) {
+    throw FileSystemException('close failed', path);
+  }
+}
+
+void _verifyReopenedIdentity(int fd, String path, PartialFileIdentity? expected) {
+  if (expected == null) return;
+  final stat = platformFstat(fd);
+  if (stat == null || !expected.matches(stat)) {
+    throw FileSystemException(
+      'Partial file identity changed after reopen',
+      path,
+    );
+  }
+}
+
 int _openReadOnlyNoFollow(String path) {
   const linuxORdonly = 0;
   const linuxONoFollow = 0x8000;
@@ -92,7 +129,10 @@ void _syncOpenFd(int fd, String path) {
 }
 
 /// macOS [PartialFileIo.syncFile]: `open(O_RDONLY|O_NOFOLLOW)` + `F_FULLFSYNC`.
-void posixSyncRegularFileViaFd(String path) {
+void posixSyncRegularFileViaFd(
+  String path, {
+  PartialFileIdentity? expectedIdentity,
+}) {
   if (!Platform.isLinux && !Platform.isMacOS) {
     return;
   }
@@ -100,34 +140,35 @@ void posixSyncRegularFileViaFd(String path) {
   if (fd < 0) {
     throw FileSystemException('Cannot open file for sync', path);
   }
-  final closeFn = posixLib().lookupFunction<
-      Int32 Function(Int32),
-      int Function(int)>('close');
   try {
+    _verifyReopenedIdentity(fd, path, expectedIdentity);
     _syncOpenFd(fd, path);
   } finally {
-    closeFn(fd);
+    _posixCloseChecked(fd, path);
   }
 }
 
-/// Before rename: `fchmod(0644)` on the fd, then fsync / F_FULLFSYNC.
-void posixFchmodAndSyncBeforeRename(String path, {int mode = 420}) {
+/// Before rename: `fchmod(mode)` on the fd, then fsync / F_FULLFSYNC.
+void posixFchmodAndSyncBeforeRename(
+  String path, {
+  int? mode,
+  PartialFileIdentity? expectedIdentity,
+}) {
   if (!Platform.isLinux && !Platform.isMacOS) {
     return;
   }
+  final commitMode = mode ?? posixCommittedRegularFileMode();
   final fd = _openReadOnlyNoFollow(path);
   if (fd < 0) {
     throw FileSystemException('Cannot open partial for fchmod before rename', path);
   }
-  final closeFn = posixLib().lookupFunction<
-      Int32 Function(Int32),
-      int Function(int)>('close');
   try {
-    if (posixFchmod(fd, mode) != 0) {
+    _verifyReopenedIdentity(fd, path, expectedIdentity);
+    if (posixFchmod(fd, commitMode) != 0) {
       throw FileSystemException('fchmod failed before rename', path);
     }
     _syncOpenFd(fd, path);
   } finally {
-    closeFn(fd);
+    _posixCloseChecked(fd, path);
   }
 }

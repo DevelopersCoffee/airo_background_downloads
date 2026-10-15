@@ -279,4 +279,71 @@ printf '%-22s' "F1 range 200 splice"
 expect_fail "F1 range 200 splice" lib/src/http_background_downloads.dart \
   test/http_background_downloads_blockers_test.dart "F1 200 response to Range request never splices"
 
+# 18) G1 — synthetic Content-Range for 206 without header (must fail on all POSIX CI)
+sed_inplace 's/final parsedRange = parse/var parsedRange = parse/' \
+  lib/src/http_background_downloads.dart
+python3 - <<'PY'
+from pathlib import Path
+p = Path("lib/src/http_background_downloads.dart")
+text = p.read_text()
+anchor = """      var parsedRange = parseContentRangeHeader(
+        response.headers.value(HttpHeaders.contentRangeHeader),
+      );
+
+      var append ="""
+insert = """      var parsedRange = parseContentRangeHeader(
+        response.headers.value(HttpHeaders.contentRangeHeader),
+      );
+      if (parsedRange == null) {
+        parsedRange = _syntheticContentRangeFor206(
+          response: response,
+          resumeOffset: resumeOffset,
+          expectedBytes: job.request.expectedBytes,
+        );
+      }
+
+      var append ="""
+if anchor not in text:
+    raise SystemExit("revert_matrix: G1 anchor not found")
+text = text.replace(anchor, insert, 1)
+method = """
+  ContentRangeSpec? _syntheticContentRangeFor206({
+    required HttpClientResponse response,
+    required int resumeOffset,
+    required int? expectedBytes,
+  }) {
+    if (response.statusCode != HttpStatus.partialContent) return null;
+    if (resumeOffset <= 0 || expectedBytes == null) return null;
+    final total = expectedBytes;
+    final len = _normalizedContentLength(response);
+    if (len != null && len > 0) {
+      final segmentLen = len == total ? total - resumeOffset : len;
+      if (segmentLen > 0 && resumeOffset + segmentLen == total) {
+        return ContentRangeSpec(
+          start: resumeOffset,
+          end: total - 1,
+          total: total,
+        );
+      }
+    }
+    return ContentRangeSpec(
+      start: resumeOffset,
+      end: total - 1,
+      total: total,
+    );
+  }
+
+"""
+needle = "  void _recordResumeCapability(_HttpDownloadJob job, HttpClientResponse response) {"
+if needle not in text:
+    raise SystemExit("revert_matrix: G1 method anchor not found")
+if "ContentRangeSpec? _syntheticContentRangeFor206" in text:
+    raise SystemExit("revert_matrix: synthesis method already present")
+text = text.replace(needle, method + needle, 1)
+p.write_text(text)
+PY
+printf '%-22s' "G1 206 synth CR"
+expect_fail "G1 206 synth CR" lib/src/http_background_downloads.dart \
+  test/http_background_downloads_blockers_test.dart "G1 206 without Content-Range refuses resume splice"
+
 echo "Done."

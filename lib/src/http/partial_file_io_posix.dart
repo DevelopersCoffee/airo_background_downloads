@@ -115,7 +115,10 @@ base class PosixPartialFileIo implements PartialFileIo {
       throw FileSystemException('Cannot fsync missing file', path);
     }
     if (Platform.isMacOS) {
-      posixSyncRegularFileViaFd(path);
+      posixSyncRegularFileViaFd(
+        path,
+        expectedIdentity: platformLstat(path),
+      );
       return;
     }
     final raf = await File(path).open(mode: FileMode.read);

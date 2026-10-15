@@ -10,6 +10,7 @@ import 'http/partial_file_io.dart';
 import 'http/download_directory_guard.dart';
 import 'http/partial_storage_cleanup.dart';
 import 'http/partial_storage_paths.dart';
+import 'http/partial_file_stat.dart';
 import 'http/posix_variadic.dart';
 import 'http/partial_path_guard.dart';
 import 'http/resume_policy.dart';
@@ -579,9 +580,23 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
   ) async {
     _pathGuard.requireSafeRegularPartialBeforeCommit(partial.path);
     _partialFileIo.prepareDestinationForCommit(destination.path);
-    await _partialFileIo.syncFile(partial.path);
+    PartialFileIdentity? partialIdentity;
     if (Platform.isLinux || Platform.isMacOS) {
-      posixFchmodAndSyncBeforeRename(partial.path);
+      partialIdentity = platformLstat(partial.path);
+    }
+    if (Platform.isMacOS) {
+      posixSyncRegularFileViaFd(
+        partial.path,
+        expectedIdentity: partialIdentity,
+      );
+    } else {
+      await _partialFileIo.syncFile(partial.path);
+    }
+    if (Platform.isLinux || Platform.isMacOS) {
+      posixFchmodAndSyncBeforeRename(
+        partial.path,
+        expectedIdentity: partialIdentity,
+      );
     }
     await _partialFileIo.syncDirectory(destination.parent.path);
     await partial.rename(destination.path);

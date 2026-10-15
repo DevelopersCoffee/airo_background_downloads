@@ -9,6 +9,7 @@ import 'package:airo_background_downloads/src/http/partial_file_stat.dart';
 import 'package:airo_background_downloads/src/http/partial_storage_paths.dart';
 import 'package:airo_background_downloads/src/http/posix_file_read.dart';
 import 'package:airo_background_downloads/src/http/posix_syscalls.dart';
+import 'package:airo_background_downloads/src/http/posix_variadic.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -182,7 +183,7 @@ void main() {
     expect(requestCount, equals(2));
   });
 
-  test('committed destination uses mode 0644 and removes empty partial storage', () async {
+  test('committed destination uses umask-adjusted mode and removes empty partial storage', () async {
     if (!Platform.isLinux && !Platform.isMacOS) return;
     final payload = utf8.encode('committed-mode-0644-payload');
     final destination = File('${tempDir.path}/mode644.bin');
@@ -207,7 +208,7 @@ void main() {
     expect(terminal.status, DownloadStatus.completed);
     final mode = platformPathMode(destination.path);
     expect(mode, isNotNull);
-    expect(mode! & 0x1FF, equals(420));
+    expect(mode! & 0x1FF, equals(posixCommittedRegularFileMode()));
     final storage = PartialStoragePaths.forDestination(destination.path).storageDirectory;
     expect(Directory(storage).existsSync(), isFalse);
   });
@@ -268,6 +269,136 @@ void main() {
       if (bytes.length == totalSize) {
         expect(bytes.sublist(resumeAt), isNot(equals(List.filled(40000, 0x5A))));
       }
+    }
+    if (terminal.status == DownloadStatus.completed) {
+      expect(await _readFileBytes(destination.path), equals(payload));
+    } else {
+      expect(terminal.status, DownloadStatus.failed);
+    }
+  });
+
+  test('G1 206 without Content-Range refuses resume splice', () async {
+    const totalSize = 100000;
+    const resumeAt = 60000;
+    final payload = List<int>.generate(totalSize, (index) => index % 251);
+    final destination = File('${tempDir.path}/g1-206-no-cr.bin');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
+    await partial.writeAsBytes(List.filled(resumeAt, 0x41));
+
+    final url = await bindServer((request) async {
+      final range = request.headers.value(HttpHeaders.rangeHeader);
+      if (range != null && range.startsWith('bytes=$resumeAt')) {
+        request.response
+          ..statusCode = HttpStatus.partialContent
+          ..contentLength = totalSize - resumeAt
+          ..add(List.filled(totalSize - resumeAt, 0x5A))
+          ..close();
+        return;
+      }
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..contentLength = totalSize
+        ..add(payload)
+        ..close();
+    });
+
+    await File('${partial.path}.meta').writeAsString(
+      jsonEncode({
+        'source': url.toString(),
+        'expectedBytes': totalSize,
+        'etag': '"g1-strong"',
+        'resumeByteOffset': resumeAt,
+      }),
+    );
+
+    final downloads = HttpBackgroundDownloads(clientFactory: testClient);
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'g1-206-no-cr',
+        source: url,
+        destinationPath: destination.path,
+        expectedBytes: totalSize,
+      ),
+    );
+
+    final terminal = await waitForTerminal(downloads, 'g1-206-no-cr');
+    if (destination.existsSync()) {
+      final bytes = await _readFileBytes(destination.path);
+      final splicedCorruptFile =
+          bytes.length == totalSize &&
+          bytes.sublist(0, resumeAt).every((byte) => byte == 0x41) &&
+          bytes.sublist(resumeAt).every((byte) => byte == 0x5A);
+      expect(
+        splicedCorruptFile,
+        isFalse,
+        reason: 'must not commit partial prefix spliced with 206 body',
+      );
+    }
+    if (terminal.status == DownloadStatus.completed) {
+      expect(await _readFileBytes(destination.path), equals(payload));
+    } else {
+      expect(terminal.status, DownloadStatus.failed);
+    }
+  });
+
+  test('G1 invalid Content-Range refuses resume splice', () async {
+    const totalSize = 100000;
+    const resumeAt = 60000;
+    final payload = List<int>.generate(totalSize, (index) => index % 251);
+    final destination = File('${tempDir.path}/g1-206-bad-cr.bin');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
+    await partial.writeAsBytes(List.filled(resumeAt, 0x41));
+
+    final url = await bindServer((request) async {
+      final range = request.headers.value(HttpHeaders.rangeHeader);
+      if (range != null && range.startsWith('bytes=$resumeAt')) {
+        request.response
+          ..statusCode = HttpStatus.partialContent
+          ..headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes 0-${totalSize - 1}/$totalSize',
+          )
+          ..contentLength = totalSize - resumeAt
+          ..add(List.filled(totalSize - resumeAt, 0x5A))
+          ..close();
+        return;
+      }
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..contentLength = totalSize
+        ..add(payload)
+        ..close();
+    });
+
+    await File('${partial.path}.meta').writeAsString(
+      jsonEncode({
+        'source': url.toString(),
+        'expectedBytes': totalSize,
+        'etag': '"g1-bad-cr-strong"',
+        'resumeByteOffset': resumeAt,
+      }),
+    );
+
+    final downloads = HttpBackgroundDownloads(clientFactory: testClient);
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'g1-206-bad-cr',
+        source: url,
+        destinationPath: destination.path,
+        expectedBytes: totalSize,
+      ),
+    );
+
+    final terminal = await waitForTerminal(downloads, 'g1-206-bad-cr');
+    if (destination.existsSync()) {
+      final bytes = await _readFileBytes(destination.path);
+      final splicedCorruptFile =
+          bytes.length == totalSize &&
+          bytes.sublist(0, resumeAt).every((byte) => byte == 0x41) &&
+          bytes.sublist(resumeAt).every((byte) => byte == 0x5A);
+      expect(splicedCorruptFile, isFalse);
     }
     if (terminal.status == DownloadStatus.completed) {
       expect(await _readFileBytes(destination.path), equals(payload));

@@ -101,6 +101,7 @@ class PosixPartialFileWriter implements PartialFileWriter {
     final closeFn = lib.lookupFunction<CloseNative, CloseDart>('close');
     final writeFn = lib.lookupFunction<WriteNative, WriteDart>('write');
     final fsyncFn = lib.lookupFunction<FsyncNative, FsyncDart>('fsync');
+    final lseekFn = lib.lookupFunction<LseekNative, LseekDart>('lseek');
 
     final flags = append
         ? _openFlagsAppend()
@@ -138,6 +139,13 @@ class PosixPartialFileWriter implements PartialFileWriter {
             path,
           );
         }
+        if (append && Platform.isMacOS) {
+          final end = lseekFn(fd, 0, _seekEnd);
+          if (end < 0) {
+            closeFn(fd);
+            throw FileSystemException('lseek to end failed for partial append', path);
+          }
+        }
         return PosixPartialFileWriter._(fd, stat, closeFn, writeFn, fsyncFn);
       } on Object {
         closeFn(fd);
@@ -153,9 +161,8 @@ int _openFlagsAppend() {
   if (Platform.isLinux) {
     return _linuxOWronly | _linuxOAppend | _linuxONoFollow;
   }
-  // macOS: O_RDWR so SHA-256 can read back from the open fd before close.
-  // Re-open for append omits O_NOFOLLOW; the path was sanitized at job start.
-  return _darwinORdwr | _darwinOAppend;
+  // macOS: O_RDWR (seek-to-end after open) so append reopen works on 0600 partials.
+  return _darwinORdwr;
 }
 
 int _openFlagsCreateExclusive() {
@@ -194,6 +201,7 @@ typedef ReadNative = IntPtr Function(Int32, Pointer<Void>, IntPtr);
 typedef ReadDart = int Function(int, Pointer<Void>, int);
 
 const _seekSet = 0;
+const _seekEnd = 2;
 
 // Darwin fcntl.h — F_FULLFSYNC
 const _darwinFullFsyncCmd = 51;

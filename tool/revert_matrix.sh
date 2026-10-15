@@ -91,7 +91,7 @@ expect_fail "exclusive" lib/src/http/partial_file_writer_posix.dart \
   test/k2_security_regressions_test.dart "K2 O_NOFOLLOW exclusive open refuses symlink partial target"
 
 # 8) pre-commit symlink
-sed -i '52s/if (!inspection.isSafeRegularFileOwnedByUs)/if (false)/' \
+sed -i '58s/if (!inspection.isSafeRegularFileOwnedByUs)/if (false)/' \
   lib/src/http/partial_path_guard.dart
 printf '%-22s' "pre-commit"
 expect_fail "pre-commit" lib/src/http/partial_path_guard.dart \
@@ -147,11 +147,17 @@ bytes_old = """  int reusablePartialBytes(String partialPath) {
       }
       return 0;
     }
-    return File(partialPath).lengthSync();
+    final size = platformPathFileSize(partialPath);
+    if (size == null) {
+      _io.unlinkPartialEntry(partialPath);
+      return 0;
+    }
+    return size;
   }"""
 bytes_new = """  int reusablePartialBytes(String partialPath) {
     if (_io.inspectPath(partialPath).isAbsent) return 0;
-    return File(partialPath).lengthSync();
+    final size = platformPathFileSize(partialPath);
+    return size ?? 0;
   }"""
 for label, old, new in (
     ("sanitize", sanitize_old, sanitize_new),

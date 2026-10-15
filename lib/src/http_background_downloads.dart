@@ -345,11 +345,13 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       var parsedRange = parseContentRangeHeader(
         response.headers.value(HttpHeaders.contentRangeHeader),
       );
-      parsedRange ??= _syntheticContentRangeFor206(
-        response: response,
-        resumeOffset: resumeOffset,
-        expectedBytes: job.request.expectedBytes,
-      );
+      if (parsedRange == null && Platform.isMacOS) {
+        parsedRange = _syntheticContentRangeFor206(
+          response: response,
+          resumeOffset: resumeOffset,
+          expectedBytes: job.request.expectedBytes,
+        );
+      }
 
       var append =
           maySendRange &&
@@ -573,9 +575,16 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     if (resumeOffset <= 0 || expectedBytes == null) return null;
     final total = expectedBytes;
     final len = _normalizedContentLength(response);
-    if (len == null || len <= 0) return null;
-    final segmentLen = len == total ? total - resumeOffset : len;
-    if (segmentLen <= 0 || resumeOffset + segmentLen != total) return null;
+    if (len != null && len > 0) {
+      final segmentLen = len == total ? total - resumeOffset : len;
+      if (segmentLen > 0 && resumeOffset + segmentLen == total) {
+        return ContentRangeSpec(
+          start: resumeOffset,
+          end: total - 1,
+          total: total,
+        );
+      }
+    }
     return ContentRangeSpec(
       start: resumeOffset,
       end: total - 1,

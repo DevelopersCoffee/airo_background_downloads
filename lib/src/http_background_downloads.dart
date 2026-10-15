@@ -421,7 +421,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       try {
         await for (final chunk in response.timeout(_idleReadTimeout)) {
           if (job.cancelRequested) {
-            await validatorStore.persistResumeByteOffset(job.downloadedBytes);
+            await validatorStore.persistResumeByteOffset(
+              job.downloadedBytes,
+              request: job.request,
+            );
             await closeWriter();
             await _partialFileIo.syncFile(partial.path);
             return;
@@ -443,7 +446,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       } on Object {
         await closeWriter();
         if (job.cancelRequested) {
-          await validatorStore.persistResumeByteOffset(job.downloadedBytes);
+          await validatorStore.persistResumeByteOffset(
+              job.downloadedBytes,
+              request: job.request,
+            );
           await _partialFileIo.syncFile(partial.path);
           return;
         }
@@ -501,7 +507,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       partialPath,
       partialFileIo: _partialFileIo,
     );
-    await validatorStore.persistResumeByteOffset(job.downloadedBytes);
+    await validatorStore.persistResumeByteOffset(
+              job.downloadedBytes,
+              request: job.request,
+            );
     await _partialFileIo.syncFile(partialPath);
   }
 

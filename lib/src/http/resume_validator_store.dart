@@ -31,18 +31,32 @@ class ResumeValidatorStore {
     return record.resumeByteOffset;
   }
 
-  Future<void> persistResumeByteOffset(int bytes) async {
+  Future<void> persistResumeByteOffset(
+    int bytes, {
+    DownloadArtifactRequest? request,
+  }) async {
     if (bytes <= 0) return;
-    final record = await _readRecord();
-    if (record == null) return;
+    final existing = await _readRecord();
+    if (existing != null) {
+      await _writeRecord(
+        _ResumeRecord(
+          source: existing.source,
+          expectedBytes: existing.expectedBytes,
+          expectedSha256: existing.expectedSha256,
+          strongEtag: existing.strongEtag,
+          lastModified: existing.lastModified,
+          partialIdentity: existing.partialIdentity,
+          resumeByteOffset: bytes,
+        ),
+      );
+      return;
+    }
+    if (request == null) return;
     await _writeRecord(
       _ResumeRecord(
-        source: record.source,
-        expectedBytes: record.expectedBytes,
-        expectedSha256: record.expectedSha256,
-        strongEtag: record.strongEtag,
-        lastModified: record.lastModified,
-        partialIdentity: record.partialIdentity,
+        source: request.source.toString(),
+        expectedBytes: request.expectedBytes,
+        expectedSha256: request.expectedSha256,
         resumeByteOffset: bytes,
       ),
     );

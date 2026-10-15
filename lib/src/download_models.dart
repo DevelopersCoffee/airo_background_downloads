@@ -12,6 +12,7 @@ class DownloadArtifactRequest {
     this.expectedBytes,
     String? expectedSha256,
     String? displayName,
+    this.headers = const {},
   }) : artifactId = _validatedArtifactId(artifactId),
        destinationPath = _requiredText(destinationPath, 'destinationPath'),
        expectedSha256 = _validatedSha256(expectedSha256),
@@ -34,6 +35,7 @@ class DownloadArtifactRequest {
   final int? expectedBytes;
   final String? expectedSha256;
   final String? displayName;
+  final Map<String, String> headers;
 
   Map<String, Object?> toPlatformMap() => <String, Object?>{
     'contractVersion': backgroundDownloadContractVersion,
@@ -43,6 +45,7 @@ class DownloadArtifactRequest {
     if (expectedBytes != null) 'expectedBytes': expectedBytes,
     if (expectedSha256 != null) 'expectedSha256': expectedSha256,
     if (displayName != null) 'displayName': displayName,
+    if (headers.isNotEmpty) 'headers': headers,
   };
 
   static String _requiredText(String value, String name) {

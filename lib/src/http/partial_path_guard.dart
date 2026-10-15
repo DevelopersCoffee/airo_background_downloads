@@ -40,8 +40,9 @@ class PartialPathGuard {
       return 0;
     }
     final size = platformPathFileSize(partialPath);
-    if (size == null) {
-      _io.unlinkPartialEntry(partialPath);
+    if (size == null || size < 0) {
+      // Keep the partial when lstat size is unavailable (macOS libc 0600);
+      // resume byte count may still come from `.meta`.
       return 0;
     }
     return size;

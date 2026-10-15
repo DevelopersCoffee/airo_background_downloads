@@ -556,11 +556,20 @@ void main() {
       ),
     );
 
-    await downloads.events.firstWhere(
-      (event) =>
-          event.artifactId == 'b5-symlink' &&
-          event.downloadedBytes > 0,
-    );
+    final firstProgress = await downloads.events
+        .firstWhere(
+          (event) =>
+              event.artifactId == 'b5-symlink' &&
+              (event.downloadedBytes > 0 ||
+                  event.status == DownloadStatus.completed ||
+                  event.status == DownloadStatus.failed),
+        )
+        .timeout(
+          Platform.isMacOS
+              ? const Duration(minutes: 2)
+              : const Duration(seconds: 30),
+        );
+    expect(firstProgress.status, isNot(DownloadStatus.failed));
     expect(
       FileSystemEntity.typeSync(partial.path, followLinks: false),
       isNot(FileSystemEntityType.link),

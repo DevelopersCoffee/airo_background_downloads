@@ -366,7 +366,12 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
           append: doAppend,
           expectedIdentity: expectedIdentity,
         );
+        job.partialOpenFailures = 0;
       } on FileSystemException {
+        job.partialOpenFailures += 1;
+        if (job.partialOpenFailures > 4) {
+          rethrow;
+        }
         _partialFileIo.unlinkPartialEntry(partial.path);
         validatorStore.deleteSync();
         job.downloadedBytes = 0;
@@ -544,6 +549,7 @@ class _HttpDownloadJob {
   bool cancelRequested = false;
   HttpClient? client;
   bool serverAdvertisedResume = false;
+  int partialOpenFailures = 0;
 
   DownloadProgress queued() => DownloadProgress(
     artifactId: request.artifactId,

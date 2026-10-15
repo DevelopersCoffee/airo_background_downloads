@@ -46,6 +46,13 @@ class DartCreatePartialWriter implements PartialFileWriter {
     String path,
   ) async {
     io.unlinkPartialEntry(path);
+    if (Platform.isMacOS) {
+      for (var i = 0; i < 3; i++) {
+        final type = FileSystemEntity.typeSync(path, followLinks: false);
+        if (type == FileSystemEntityType.notFound) break;
+        io.unlinkPartialEntry(path);
+      }
+    }
     final file = File(path);
     file.createSync(exclusive: true);
     final inspection = io.inspectPath(path);

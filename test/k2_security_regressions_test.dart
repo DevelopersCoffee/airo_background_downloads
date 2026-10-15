@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:airo_background_downloads/airo_background_downloads.dart';
 import 'package:airo_background_downloads/src/http/partial_file_identity.dart';
 import 'package:airo_background_downloads/src/http/partial_file_io.dart';
-import 'package:airo_background_downloads/src/http/partial_file_io_posix.dart';
+import 'package:airo_background_downloads/src/http/partial_file_writer_posix.dart';
 import 'package:airo_background_downloads/src/http/partial_path_guard.dart';
 import 'package:airo_background_downloads/src/http/partial_file_stat.dart';
 import 'package:airo_background_downloads/src/http/resume_validator_store.dart';
@@ -167,9 +167,12 @@ void main() {
     await victim.writeAsString('untouched');
     final partialPath = '${dir.path}/dl.partial';
     await Link(partialPath).create(victim.path);
-    final io = PosixPartialFileIo();
-    await expectLater(
-      io.openVerifiedPartialWriter(partialPath, append: false),
+    expect(
+      () => PosixPartialFileWriter.open(
+        partialPath,
+        append: false,
+        currentUid: platformCurrentUserId(),
+      ),
       throwsA(isA<FileSystemException>()),
     );
     expect(await victim.readAsString(), equals('untouched'));

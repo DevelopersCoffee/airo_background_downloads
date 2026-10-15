@@ -154,7 +154,8 @@ int _openFlagsAppend() {
     return _linuxOWronly | _linuxOAppend | _linuxONoFollow;
   }
   // macOS: O_RDWR so SHA-256 can read back from the open fd before close.
-  return _darwinORdwr | _darwinOAppend | _darwinONoFollow;
+  // Re-open for append omits O_NOFOLLOW; the path was sanitized at job start.
+  return _darwinORdwr | _darwinOAppend;
 }
 
 int _openFlagsCreateExclusive() {

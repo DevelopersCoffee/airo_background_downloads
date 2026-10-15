@@ -458,7 +458,18 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
           expectedIdentity: identityForOpen,
         );
         job.partialOpenFailures = 0;
-      } on FileSystemException {
+      } on FileSystemException catch (e) {
+        assert(() {
+          if (Platform.environment['DEBUG_N2_CANCEL'] == '1' &&
+              job.request.artifactId == 'n2-interrupted') {
+            // ignore: avoid_print
+            print(
+              'N2 debug partial open failed: $e append=$doAppend '
+              'identity=${identityForOpen != null}',
+            );
+          }
+          return true;
+        }());
         job.partialOpenFailures += 1;
         if (job.partialOpenFailures > 4) {
           rethrow;

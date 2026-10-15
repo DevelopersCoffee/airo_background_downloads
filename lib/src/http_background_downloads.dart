@@ -10,6 +10,7 @@ import 'http/partial_file_identity.dart';
 import 'http/partial_file_io.dart';
 import 'http/download_directory_guard.dart';
 import 'http/partial_path_guard.dart';
+import 'http/partial_file_stat.dart';
 import 'http/resume_policy.dart';
 import 'http/resume_validator_store.dart';
 import 'processors/streaming_checksum.dart';
@@ -435,12 +436,20 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         );
       }
 
+      PartialFileIdentity? identityForOpen = expectedIdentity;
+      if (Platform.isMacOS && doAppend && expectedIdentity != null) {
+        final live = platformLstat(partial.path);
+        if (live != null && expectedIdentity.matches(live)) {
+          identityForOpen = null;
+        }
+      }
+
       late final PartialFileWriter writer;
       try {
         writer = await _partialFileIo.openVerifiedPartialWriter(
           partial.path,
           append: doAppend,
-          expectedIdentity: expectedIdentity,
+          expectedIdentity: identityForOpen,
         );
         job.partialOpenFailures = 0;
       } on FileSystemException {

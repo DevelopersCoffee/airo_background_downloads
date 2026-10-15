@@ -29,7 +29,8 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
        _idleReadTimeout = idleReadTimeout ?? _defaultIdleReadTimeout {
     if (Platform.isAndroid || Platform.isIOS) {
       throw UnsupportedError(
-        'HttpBackgroundDownloads is desktop-only; use BackgroundDownloads factory.',
+        'HttpBackgroundDownloads is desktop-only (Linux, macOS, Windows). '
+        'On Android and iOS use BackgroundDownloads.platform() for native engines.',
       );
     }
   }

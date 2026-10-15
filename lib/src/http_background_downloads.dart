@@ -584,14 +584,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     if (Platform.isLinux || Platform.isMacOS) {
       partialIdentity = platformLstat(partial.path);
     }
-    if (Platform.isMacOS) {
-      posixSyncRegularFileViaFd(
-        partial.path,
-        expectedIdentity: partialIdentity,
-      );
-    } else {
-      await _partialFileIo.syncFile(partial.path);
-    }
+    await _partialFileIo.syncFile(partial.path);
     if (Platform.isLinux || Platform.isMacOS) {
       posixFchmodAndSyncBeforeRename(
         partial.path,

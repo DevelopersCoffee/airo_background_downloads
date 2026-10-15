@@ -437,9 +437,15 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       }
 
       PartialFileIdentity? identityForOpen = expectedIdentity;
-      if (Platform.isMacOS && doAppend && expectedIdentity != null) {
-        final live = platformLstat(partial.path);
-        if (live != null && expectedIdentity.matches(live)) {
+      if (Platform.isMacOS && doAppend) {
+        final storedOffset = await validatorStore.readResumeByteOffsetFor(
+          job.request,
+        );
+        final partialSize = platformPathFileSize(partial.path);
+        if (storedOffset != null &&
+            partialSize != null &&
+            storedOffset == partialSize &&
+            storedOffset == resumeOffset) {
           identityForOpen = null;
         }
       }

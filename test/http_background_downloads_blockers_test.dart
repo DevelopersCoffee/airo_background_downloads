@@ -212,8 +212,13 @@ void main() {
 
     if (Platform.isWindows) {
       final linkResult = await Process.run(
-        'cmd',
-        ['/c', 'mklink /H', partial.path, victim.path],
+        'powershell',
+        [
+          '-NoProfile',
+          '-Command',
+          "New-Item -ItemType HardLink -Path '${partial.path.replaceAll("'", "''")}' "
+              "-Target '${victim.path.replaceAll("'", "''")}' | Out-Null",
+        ],
       );
       expect(linkResult.exitCode, equals(0), reason: linkResult.stderr.toString());
     } else {

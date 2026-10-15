@@ -444,15 +444,16 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         await _partialFileIo.syncFile(partial.path);
         throw HttpException('HTTP idle read timeout');
       } on Object {
-        await closeWriter();
         if (job.cancelRequested) {
           await validatorStore.persistResumeByteOffset(
-              job.downloadedBytes,
-              request: job.request,
-            );
+            job.downloadedBytes,
+            request: job.request,
+          );
+          await closeWriter();
           await _partialFileIo.syncFile(partial.path);
           return;
         }
+        await closeWriter();
         rethrow;
       }
 

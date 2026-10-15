@@ -76,6 +76,10 @@ class PosixPartialFileWriter implements PartialFileWriter {
       if (_fsync(_fd) != 0) {
         throw FileSystemException('fsync failed for partial fd');
       }
+    } else if (Platform.isMacOS) {
+      if (_darwinFullFsync(_fd) != 0) {
+        throw FileSystemException('F_FULLFSYNC failed for partial fd');
+      }
     }
     final result = _close(_fd);
     if (result != 0) {
@@ -189,3 +193,15 @@ typedef ReadNative = IntPtr Function(Int32, Pointer<Void>, IntPtr);
 typedef ReadDart = int Function(int, Pointer<Void>, int);
 
 const _seekSet = 0;
+
+// Darwin fcntl.h — F_FULLFSYNC
+const _darwinFullFsyncCmd = 51;
+
+int _darwinFullFsync(int fd) {
+  final lib = DynamicLibrary.open('libSystem.dylib');
+  final fcntlFn = lib.lookupFunction<FcntlNative, FcntlDart>('fcntl');
+  return fcntlFn(fd, _darwinFullFsyncCmd, 0);
+}
+
+typedef FcntlNative = Int32 Function(Int32, Int32, Int32);
+typedef FcntlDart = int Function(int, int, int);

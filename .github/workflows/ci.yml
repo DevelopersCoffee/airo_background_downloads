@@ -29,6 +29,8 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
+        env:
+          DEBUG_N2_CANCEL: ${{ runner.os == 'macOS' && '1' || '' }}
       - name: Revert matrix (POSIX)
         if: runner.os != 'Windows'
         run: ./tool/revert_matrix.sh

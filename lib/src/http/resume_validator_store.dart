@@ -5,6 +5,7 @@ import '../download_models.dart';
 import 'etag_utils.dart';
 import 'partial_file_identity.dart';
 import 'partial_file_io.dart';
+import 'posix_file_read.dart';
 
 class ResumeValidatorStore {
   ResumeValidatorStore(
@@ -139,9 +140,7 @@ class ResumeValidatorStore {
       return null;
     }
     try {
-      final map =
-          jsonDecode(await File(_metaPath).readAsString())
-              as Map<String, dynamic>;
+      final map = jsonDecode(await _readMetaUtf8()) as Map<String, dynamic>;
       return _ResumeRecord.fromMap(map);
     } on Object {
       _partialFileIo.unlinkPartialEntry(_metaPath);
@@ -165,6 +164,14 @@ class ResumeValidatorStore {
     if (record.expectedBytes != request.expectedBytes) return false;
     if (record.expectedSha256 != request.expectedSha256) return false;
     return true;
+  }
+
+  Future<String> _readMetaUtf8() async {
+    if (Platform.isLinux || Platform.isMacOS) {
+      final bytes = await readRegularFileBytesPosix(_metaPath);
+      return utf8.decode(bytes);
+    }
+    return File(_metaPath).readAsString();
   }
 
   Future<void> _writeRecord(_ResumeRecord record) async {

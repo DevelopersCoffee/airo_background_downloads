@@ -256,6 +256,60 @@ int? _darwinStatSize(Pointer<Uint8> buf) {
   return view.getInt64(96, Endian.host);
 }
 
+/// File size from fstat on an open fd, or null when stat fails.
+int? platformFstatFileSize(int fd) {
+  if (Platform.isLinux) {
+    final lib = DynamicLibrary.open('libc.so.6');
+    final fstatFn = lib.lookupFunction<
+        Int32 Function(Int32, Pointer<Void>),
+        int Function(int, Pointer<Void>)>('fstat');
+    final buf = calloc<Uint8>(_linuxStatBufSize);
+    try {
+      if (fstatFn(fd, buf.cast()) != 0) return null;
+      return _linuxStatSize(buf);
+    } finally {
+      calloc.free(buf);
+    }
+  }
+  if (Platform.isMacOS) {
+    final lib = DynamicLibrary.open('libSystem.dylib');
+    final fstatFn = _lookupDarwinFstat(lib);
+    if (fstatFn == null) return null;
+    final buf = calloc<Uint8>(_darwinStatBufSize);
+    try {
+      if (fstatFn(fd, buf.cast()) != 0) return null;
+      return _darwinStatSize(buf);
+    } finally {
+      calloc.free(buf);
+    }
+  }
+  return null;
+}
+
+/// File size from fstat after `open(O_RDONLY)` (no follow on Linux).
+int? platformPathFileSizeFstat(String path) {
+  if (!Platform.isLinux && !Platform.isMacOS) return null;
+  final lib = DynamicLibrary.open(
+    Platform.isLinux ? 'libc.so.6' : 'libSystem.dylib',
+  );
+  final openFn = lib.lookupFunction<
+      Int32 Function(Pointer<Utf8>, Int32),
+      int Function(Pointer<Utf8>, int)>('open');
+  final closeFn = lib.lookupFunction<
+      Int32 Function(Int32),
+      int Function(int)>('close');
+  final flags = Platform.isLinux ? 0x8000 /* O_RDONLY|O_NOFOLLOW */ : 0;
+  final pathPtr = path.toNativeUtf8();
+  final fd = openFn(pathPtr, flags);
+  malloc.free(pathPtr);
+  if (fd < 0) return null;
+  try {
+    return platformFstatFileSize(fd);
+  } finally {
+    closeFn(fd);
+  }
+}
+
 /// File size from lstat (no follow), or null when stat fails.
 int? platformPathFileSize(String path) {
   if (Platform.isLinux) {

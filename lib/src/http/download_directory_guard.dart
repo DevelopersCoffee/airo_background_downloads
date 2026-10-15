@@ -117,6 +117,11 @@ int _posixMkdir(String path, int mode) {
   }
 }
 
+/// Sets POSIX permission bits on [path] (mode is octal, e.g. `0o644` → `420`).
+void posixChmodPath(String path, int mode) {
+  _posixChmod(path, mode);
+}
+
 int _posixChmod(String path, int mode) {
   final lib = DynamicLibrary.open(
     Platform.isLinux ? 'libc.so.6' : 'libSystem.dylib',

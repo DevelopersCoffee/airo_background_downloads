@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:airo_background_downloads/airo_background_downloads.dart';
+import 'package:airo_background_downloads/src/http/posix_file_read.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -320,7 +321,7 @@ void main() {
       expect(await destination.readAsString(), equals('previous-version'));
       expect(File('${destination.path}.partial').existsSync(), isTrue);
       expect(
-        await File('${destination.path}.partial').readAsBytes(),
+        await readRegularFileBytesPosix('${destination.path}.partial'),
         equals(payload),
       );
     },

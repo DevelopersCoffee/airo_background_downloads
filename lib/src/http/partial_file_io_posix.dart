@@ -6,6 +6,7 @@ import 'package:ffi/ffi.dart';
 import 'partial_file_identity.dart';
 import 'partial_file_io.dart';
 import 'partial_file_stat.dart';
+import 'partial_file_writer_dart.dart';
 import 'partial_file_writer_posix.dart';
 
 /// POSIX desktop partial file safety (Linux + macOS).
@@ -168,6 +169,21 @@ base class PosixPartialFileIo implements PartialFileIo {
     required bool append,
     PartialFileIdentity? expectedIdentity,
   }) async {
+    if (Platform.isMacOS) {
+      final inspection = inspectPath(path);
+      if (append) {
+        if (expectedIdentity != null &&
+            inspection.identity != null &&
+            !expectedIdentity.matches(inspection.identity!)) {
+          throw FileSystemException(
+            'Refusing to append: partial identity changed',
+            path,
+          );
+        }
+        return DartAppendPartialWriter.open(path, inspection);
+      }
+      return DartCreatePartialWriter.createEmpty(this, path);
+    }
     return PosixPartialFileWriter.open(
       path,
       append: append,

@@ -42,8 +42,8 @@ class DartCreatePartialWriter implements PartialFileWriter {
   final PartialFileIdentity identity;
 
   static Future<DartCreatePartialWriter> createEmpty(
-    String path,
     PartialFileIo io,
+    String path,
   ) async {
     io.unlinkPartialEntry(path);
     final file = File(path);

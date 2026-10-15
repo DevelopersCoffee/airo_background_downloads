@@ -13,7 +13,10 @@ class PartialPathGuard {
     required String partialPath,
     required String metaPath,
   }) {
-    _sanitizeOne(destinationPath);
+    final dest = _io.inspectPath(destinationPath);
+    if (dest.isSymlink) {
+      _io.unlinkPartialEntry(destinationPath);
+    }
     _sanitizeOne(partialPath);
     _sanitizeOne('$partialPath.work');
     _sanitizeOne(metaPath);

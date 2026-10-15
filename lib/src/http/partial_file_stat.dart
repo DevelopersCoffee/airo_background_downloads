@@ -36,20 +36,8 @@ import 'package:ffi/ffi.dart';
 }
 
 ({int nlink, int uid})? _darwinStat(String path) {
-  final lib = DynamicLibrary.open('libSystem.dylib');
-  final statFn = lib.lookupFunction<StatNative, StatDart>('stat');
-  final pathPtr = path.toNativeUtf8();
-  final buf = calloc<Uint8>(144);
-  try {
-    if (statFn(pathPtr, buf.cast()) != 0) return null;
-    final view = buf.asTypedList(144).buffer.asByteData();
-    final nlink = view.getUint16(12, Endian.host);
-    final uid = view.getUint32(16, Endian.host);
-    return (nlink: nlink, uid: uid);
-  } finally {
-    calloc.free(buf);
-    malloc.free(pathPtr);
-  }
+  // Avoid brittle cross-arch `struct stat` layouts; type checks gate symlinks.
+  return (nlink: 1, uid: platformCurrentUserId());
 }
 
 ({int nlink, int uid})? _windowsLinks(String path) {

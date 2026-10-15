@@ -111,6 +111,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     if (job == null) return;
     job.cancelRequested = true;
     job.client?.close(force: true);
+    await job.runCycle?.future;
     job.status = DownloadStatus.cancelled;
     _emit(
       DownloadProgress(
@@ -138,6 +139,16 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
   Future<void> _run(_HttpDownloadJob job) async {
     if (job.cancelRequested) return;
 
+    job.runCycle = Completer<void>();
+    try {
+      await _runDownload(job);
+    } finally {
+      job.runCycle?.complete();
+      job.runCycle = null;
+    }
+  }
+
+  Future<void> _runDownload(_HttpDownloadJob job) async {
     final partialPath = '${job.request.destinationPath}.partial';
     final partial = File(partialPath);
     final destination = File(job.request.destinationPath);
@@ -586,6 +597,7 @@ class _HttpDownloadJob {
   bool serverAdvertisedResume = false;
   int partialOpenFailures = 0;
   List<int>? macosPartialShaBytes;
+  Completer<void>? runCycle;
 
   DownloadProgress queued() => DownloadProgress(
     artifactId: request.artifactId,

@@ -267,13 +267,12 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         metaPath: '${partial.path}.meta',
       );
 
-      var resumeOffset = _pathGuard.reusablePartialBytes(partial.path);
       final storedOffset = await validatorStore.readResumeByteOffsetFor(
         job.request,
       );
-      if (storedOffset != null && storedOffset > resumeOffset) {
-        resumeOffset = storedOffset;
-      }
+      var resumeOffset = storedOffset != null && storedOffset > 0
+          ? storedOffset
+          : _pathGuard.reusablePartialBytes(partial.path);
       job.downloadedBytes = resumeOffset;
 
       final hasShaPin = job.request.expectedSha256 != null;

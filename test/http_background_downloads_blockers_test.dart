@@ -305,13 +305,11 @@ void main() {
     final requestLog = <String?>[];
 
     var requestCount = 0;
-    HttpRequest? interruptedRequest;
     final url = await bindServer((request) async {
       requestCount += 1;
       requestLog.add(request.headers.value(HttpHeaders.rangeHeader));
       request.response.headers.set(HttpHeaders.etagHeader, '"stream-v1"');
       if (requestCount == 1) {
-        interruptedRequest = request;
         expect(request.headers.value(HttpHeaders.rangeHeader), isNull);
         request.response
           ..statusCode = HttpStatus.ok
@@ -357,11 +355,6 @@ void main() {
           event.downloadedBytes >= 60000,
     );
     await downloads.cancel('n2-interrupted');
-    try {
-      interruptedRequest?.response.close();
-    } catch (_) {
-      // Client may already have aborted the connection.
-    }
 
     await downloads.enqueue(
       DownloadArtifactRequest(
@@ -480,6 +473,17 @@ void main() {
         expectedBytes: payload.length,
       ),
     );
+
+    await downloads.events.firstWhere(
+      (event) =>
+          event.artifactId == 'b5-symlink' &&
+          event.downloadedBytes > 0,
+    );
+    expect(
+      FileSystemEntity.typeSync(partial.path, followLinks: false),
+      isNot(FileSystemEntityType.link),
+    );
+    expect(await victim.readAsString(), equals('victim-original'));
 
     final terminal = await waitForTerminal(downloads, 'b5-symlink');
     expect(terminal.status, DownloadStatus.completed);

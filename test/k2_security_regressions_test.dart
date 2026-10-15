@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:airo_background_downloads/airo_background_downloads.dart';
-import 'package:airo_background_downloads/src/download_models.dart';
 import 'package:airo_background_downloads/src/http/partial_file_identity.dart';
 import 'package:airo_background_downloads/src/http/partial_file_io.dart';
 import 'package:airo_background_downloads/src/http/partial_path_guard.dart';

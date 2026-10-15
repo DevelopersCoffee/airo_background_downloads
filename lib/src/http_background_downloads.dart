@@ -22,12 +22,11 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     PartialFileIo? partialFileIo,
     Duration? connectionTimeout,
     Duration? idleReadTimeout,
-    int? maxDownloadBytes,
+    this._maxDownloadBytes,
   }) : _clientFactory = clientFactory ?? HttpClient.new,
        _partialFileIo = partialFileIo ?? PartialFileIo(),
        _connectionTimeout = connectionTimeout ?? _defaultConnectionTimeout,
-       _idleReadTimeout = idleReadTimeout ?? _defaultIdleReadTimeout,
-       _maxDownloadBytes = maxDownloadBytes {
+       _idleReadTimeout = idleReadTimeout ?? _defaultIdleReadTimeout {
     if (Platform.isAndroid || Platform.isIOS) {
       throw UnsupportedError(
         'HttpBackgroundDownloads is desktop-only; use BackgroundDownloads factory.',

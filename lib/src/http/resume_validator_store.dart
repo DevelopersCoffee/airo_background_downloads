@@ -133,9 +133,10 @@ class ResumeValidatorStore {
   }
 
   Future<_ResumeRecord?> _readRecord() async {
-    final inspection = _partialFileIo.inspectPath(_metaPath);
-    if (inspection.isAbsent) return null;
-    if (!inspection.isSafeRegularFileOwnedByUs) {
+    final type = FileSystemEntity.typeSync(_metaPath, followLinks: false);
+    if (type == FileSystemEntityType.notFound) return null;
+    if (type == FileSystemEntityType.link ||
+        type != FileSystemEntityType.file) {
       _partialFileIo.unlinkPartialEntry(_metaPath);
       return null;
     }
@@ -182,6 +183,7 @@ class ResumeValidatorStore {
     }
     File(_metaPath).createSync(exclusive: true);
     await File(_metaPath).writeAsString(jsonEncode(record.toMap()));
+    await _partialFileIo.syncFile(_metaPath);
   }
 }
 

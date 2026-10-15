@@ -20,7 +20,17 @@ class PartialPathGuard {
     }
     _sanitizeOne(partialPath);
     _sanitizeOne('$partialPath.work');
-    _sanitizeOne(metaPath);
+    _sanitizeMeta(metaPath);
+  }
+
+  /// `.meta` is app-owned JSON; do not require inode identity parity with partials.
+  void _sanitizeMeta(String metaPath) {
+    final type = FileSystemEntity.typeSync(metaPath, followLinks: false);
+    if (type == FileSystemEntityType.notFound) return;
+    if (type == FileSystemEntityType.link ||
+        type != FileSystemEntityType.file) {
+      _io.unlinkPartialEntry(metaPath);
+    }
   }
 
   void _sanitizeOne(String path) {

@@ -301,6 +301,17 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         outgoing.headers.set(HttpHeaders.rangeHeader, 'bytes=$resumeOffset-');
         await applyIfRangeFromStore(outgoing, validatorStore, job.request);
       }
+      assert(() {
+        if (Platform.environment['DEBUG_N2_CANCEL'] == '1') {
+          // ignore: avoid_print
+          print(
+            'N2 debug getUrl artifact=${job.request.artifactId} '
+            'storedOffset=$storedOffset resumeOffset=$resumeOffset '
+            'maySendRange=$maySendRange shaPin=$hasShaPin validator=$hasValidator',
+          );
+        }
+        return true;
+      }());
 
       final response = await outgoing.close();
       _recordResumeCapability(job, response);

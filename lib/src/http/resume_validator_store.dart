@@ -23,6 +23,31 @@ class ResumeValidatorStore {
     return record.hasStrongResumeValidator;
   }
 
+  Future<int?> readResumeByteOffsetFor(DownloadArtifactRequest request) async {
+    final record = await _readRecord();
+    if (record == null || !_recordMatchesRequest(record, request)) {
+      return null;
+    }
+    return record.resumeByteOffset;
+  }
+
+  Future<void> persistResumeByteOffset(int bytes) async {
+    if (bytes <= 0) return;
+    final record = await _readRecord();
+    if (record == null) return;
+    await _writeRecord(
+      _ResumeRecord(
+        source: record.source,
+        expectedBytes: record.expectedBytes,
+        expectedSha256: record.expectedSha256,
+        strongEtag: record.strongEtag,
+        lastModified: record.lastModified,
+        partialIdentity: record.partialIdentity,
+        resumeByteOffset: bytes,
+      ),
+    );
+  }
+
   Future<PartialFileIdentity?> readPartialIdentityFor(
     DownloadArtifactRequest request,
   ) async {
@@ -44,6 +69,7 @@ class ResumeValidatorStore {
         strongEtag: existing.strongEtag,
         lastModified: existing.lastModified,
         partialIdentity: identity,
+        resumeByteOffset: existing.resumeByteOffset,
       ),
     );
   }
@@ -86,6 +112,7 @@ class ResumeValidatorStore {
       lastModified:
           (lastModified != null && lastModified.isNotEmpty) ? lastModified : null,
       partialIdentity: partialIdentity ?? existing?.partialIdentity,
+      resumeByteOffset: existing?.resumeByteOffset,
     );
     await _writeRecord(record);
   }
@@ -152,6 +179,7 @@ class _ResumeRecord {
     this.strongEtag,
     this.lastModified,
     this.partialIdentity,
+    this.resumeByteOffset,
   });
 
   final String source;
@@ -160,6 +188,7 @@ class _ResumeRecord {
   final String? strongEtag;
   final String? lastModified;
   final PartialFileIdentity? partialIdentity;
+  final int? resumeByteOffset;
 
   bool get hasStrongResumeValidator =>
       (strongEtag?.isNotEmpty ?? false) ||
@@ -172,6 +201,7 @@ class _ResumeRecord {
     if (strongEtag != null) 'etag': strongEtag,
     if (lastModified != null) 'lastModified': lastModified,
     if (partialIdentity != null) 'partialIdentity': partialIdentity!.toJson(),
+    if (resumeByteOffset != null) 'resumeByteOffset': resumeByteOffset,
   };
 
   factory _ResumeRecord.fromMap(Map<String, dynamic> map) {
@@ -184,6 +214,7 @@ class _ResumeRecord {
       partialIdentity: PartialFileIdentity.fromJson(
         map['partialIdentity'] as Map<String, dynamic>?,
       ),
+      resumeByteOffset: (map['resumeByteOffset'] as num?)?.toInt(),
     );
   }
 }

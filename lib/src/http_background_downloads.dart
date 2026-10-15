@@ -256,6 +256,12 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       );
 
       var resumeOffset = _pathGuard.reusablePartialBytes(partial.path);
+      final storedOffset = await validatorStore.readResumeByteOffsetFor(
+        job.request,
+      );
+      if (storedOffset != null && storedOffset > resumeOffset) {
+        resumeOffset = storedOffset;
+      }
       job.downloadedBytes = resumeOffset;
 
       final hasShaPin = job.request.expectedSha256 != null;
@@ -478,6 +484,11 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     final inspection = _partialFileIo.inspectPath(partialPath);
     if (!inspection.isSafeRegularFileOwnedByUs) return;
     if (job.downloadedBytes == 0) return;
+    final validatorStore = ResumeValidatorStore(
+      partialPath,
+      partialFileIo: _partialFileIo,
+    );
+    await validatorStore.persistResumeByteOffset(job.downloadedBytes);
     await _partialFileIo.syncFile(partialPath);
   }
 

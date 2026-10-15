@@ -5,7 +5,9 @@ import 'package:flutter/foundation.dart';
 
 import 'background_downloads.dart';
 import 'download_models.dart';
+import 'http/partial_file_identity.dart';
 import 'http/partial_file_io.dart';
+import 'http/partial_file_stat.dart';
 import 'http/partial_path_guard.dart';
 import 'http/resume_policy.dart';
 import 'http/resume_validator_store.dart';
@@ -13,8 +15,6 @@ import 'processors/streaming_checksum.dart';
 
 const Duration _defaultConnectionTimeout = Duration(seconds: 30);
 const Duration _defaultIdleReadTimeout = Duration(seconds: 60);
-const int _defaultMaxDownloadBytes = 512 * 1024 * 1024 * 1024;
-
 class HttpBackgroundDownloads implements BackgroundDownloads {
   HttpBackgroundDownloads({
     HttpClient Function()? clientFactory,
@@ -27,13 +27,19 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
        _partialFileIo = partialFileIo ?? PartialFileIo(),
        _connectionTimeout = connectionTimeout ?? _defaultConnectionTimeout,
        _idleReadTimeout = idleReadTimeout ?? _defaultIdleReadTimeout,
-       _maxDownloadBytes = maxDownloadBytes ?? _defaultMaxDownloadBytes;
+       _maxDownloadBytes = maxDownloadBytes {
+    if (Platform.isAndroid || Platform.isIOS) {
+      throw UnsupportedError(
+        'HttpBackgroundDownloads is desktop-only; use BackgroundDownloads factory.',
+      );
+    }
+  }
 
   final HttpClient Function() _clientFactory;
   final PartialFileIo _partialFileIo;
   final Duration _connectionTimeout;
   final Duration _idleReadTimeout;
-  final int _maxDownloadBytes;
+  final int? _maxDownloadBytes;
   final Future<void> Function(File partial, File destination)?
   _onBeforeCommitPartial;
   final StreamController<DownloadProgress> _events =
@@ -339,11 +345,6 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         throw HttpException('HTTP ${response.statusCode}');
       }
 
-      await validatorStore.writeFromResponse(
-        response,
-        request: job.request,
-      );
-
       _applyTotalBytes(
         job,
         response,
@@ -352,24 +353,47 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         resumeOffset: resumeOffset,
       );
 
-      final IOSink sink;
-      if (append && resumeOffset > 0) {
-        sink = partial.openWrite(mode: FileMode.append);
-      } else {
-        _pathGuard.createExclusiveEmptyFile(partial.path);
-        sink = partial.openWrite(mode: FileMode.write);
+      final doAppend = append && resumeOffset > 0;
+      PartialFileIdentity? expectedIdentity;
+      if (doAppend) {
+        expectedIdentity = await validatorStore.readPartialIdentityFor(
+          job.request,
+        );
+      }
+
+      late final PartialFileWriter writer;
+      try {
+        writer = await _partialFileIo.openVerifiedPartialWriter(
+          partial.path,
+          append: doAppend,
+          expectedIdentity: expectedIdentity,
+        );
+      } on FileSystemException {
+        _partialFileIo.unlinkPartialEntry(partial.path);
+        validatorStore.deleteSync();
+        job.downloadedBytes = 0;
+        continue;
+      }
+
+      await validatorStore.writeFromResponse(
+        response,
+        request: job.request,
+        partialIdentity: writer.identity,
+      );
+      if (!doAppend) {
+        await validatorStore.attachPartialIdentity(writer.identity);
       }
 
       var bytesReceived = 0;
       try {
         await for (final chunk in response.timeout(_idleReadTimeout)) {
           if (job.cancelRequested) {
-            await sink.close();
+            await writer.close();
             await _partialFileIo.syncFile(partial.path);
             return;
           }
           _enforceSizeCap(resumeOffset + bytesReceived + chunk.length, job);
-          sink.add(chunk);
+          writer.writeBytes(chunk);
           bytesReceived += chunk.length;
           job.downloadedBytes = resumeOffset + bytesReceived;
           final elapsed = DateTime.now().difference(startedAt).inMilliseconds;
@@ -382,7 +406,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         await _partialFileIo.syncFile(partial.path);
         throw HttpException('HTTP idle read timeout');
       } finally {
-        await sink.close();
+        await writer.close();
       }
 
       final declaredLength = _normalizedContentLength(response);
@@ -413,8 +437,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
   }
 
   void _enforceSizeCap(int nextTotalBytes, _HttpDownloadJob job) {
-    final expected = job.request.expectedBytes;
-    final cap = expected ?? _maxDownloadBytes;
+    final cap =
+        job.request.expectedBytes ??
+        _maxDownloadBytes ??
+        kDocumentedFallbackMaxDownloadBytes;
     if (nextTotalBytes > cap) {
       throw HttpException('Download exceeded allowed size ($cap bytes)');
     }

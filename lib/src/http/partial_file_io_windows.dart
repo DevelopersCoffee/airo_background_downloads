@@ -3,8 +3,10 @@ import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 
+import 'partial_file_identity.dart';
 import 'partial_file_io.dart';
 import 'partial_file_stat.dart';
+import 'partial_file_writer_windows.dart';
 
 base class WindowsPartialFileIo implements PartialFileIo {
   WindowsPartialFileIo() {
@@ -61,13 +63,24 @@ base class WindowsPartialFileIo implements PartialFileIo {
         ownedByUs: false,
       );
     }
-    final stat = platformLinkCountAndOwner(path);
+    final stat = platformLstat(path);
+    if (stat == null) {
+      return const PartialPathInspection(
+        isAbsent: false,
+        isSymlink: false,
+        isRegularFile: true,
+        linkCount: null,
+        ownedByUs: false,
+      );
+    }
+    // Windows has no portable POSIX owner uid; nlink is enforced instead.
     return PartialPathInspection(
       isAbsent: false,
       isSymlink: false,
       isRegularFile: true,
-      linkCount: stat?.nlink,
+      linkCount: stat.linkCount,
       ownedByUs: true,
+      identity: stat,
     );
   }
 
@@ -131,8 +144,22 @@ base class WindowsPartialFileIo implements PartialFileIo {
     }
   }
 
+  /// Windows has no supported directory durability hook; see [PartialFileIo.syncDirectory].
   @override
   Future<void> syncDirectory(String directoryPath) async {}
+
+  @override
+  Future<PartialFileWriter> openVerifiedPartialWriter(
+    String path, {
+    required bool append,
+    PartialFileIdentity? expectedIdentity,
+  }) async {
+    return WindowsPartialFileWriter.open(
+      path,
+      append: append,
+      expectedIdentity: expectedIdentity,
+    );
+  }
 
   int _openWriteHandle(String path) {
     final pathPtr = path.toNativeUtf16();

@@ -204,6 +204,85 @@ void main() {
     expect(requestCount, equals(2));
   });
 
+  test('K1 hardlinked partial with validator must not grow victim on resume', () async {
+    const totalSize = 100000;
+    final victim = File('${tempDir.path}/k1-victim.bin');
+    final victimBytes = List<int>.filled(40, 'V'.codeUnitAt(0));
+    await victim.writeAsBytes(victimBytes);
+
+    final destination = File('${tempDir.path}/k1-dest.bin');
+    final partial = File('${destination.path}.partial');
+    if (Platform.isWindows) {
+      final linkResult = await Process.run(
+        'powershell',
+        [
+          '-NoProfile',
+          '-Command',
+          "New-Item -ItemType HardLink -Path '${partial.path.replaceAll("'", "''")}' "
+              "-Target '${victim.path.replaceAll("'", "''")}' | Out-Null",
+        ],
+      );
+      expect(linkResult.exitCode, equals(0), reason: linkResult.stderr.toString());
+    } else {
+      final linkResult = await Process.run('ln', [victim.path, partial.path]);
+      expect(linkResult.exitCode, equals(0), reason: linkResult.stderr.toString());
+    }
+
+    final payload = List<int>.generate(totalSize, (i) => i % 251);
+    final requestLog = <String?>[];
+    final boundUrl = await bindServer((request) async {
+      requestLog.add(request.headers.value(HttpHeaders.rangeHeader));
+      request.response.headers.set(HttpHeaders.etagHeader, '"k1-strong"');
+      final range = request.headers.value(HttpHeaders.rangeHeader);
+      if (range == 'bytes=40-') {
+        request.response
+          ..statusCode = HttpStatus.partialContent
+          ..headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes 40-${totalSize - 1}/$totalSize',
+          )
+          ..contentLength = totalSize - 40
+          ..add(payload.sublist(40))
+          ..close();
+        return;
+      }
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..contentLength = totalSize
+        ..add(payload)
+        ..close();
+    });
+
+    final meta = File('${partial.path}.meta');
+    await meta.writeAsString(
+      jsonEncode({
+        'source': boundUrl.toString(),
+        'expectedBytes': totalSize,
+        'etag': '"k1-strong"',
+      }),
+    );
+
+    final downloads = HttpBackgroundDownloads(clientFactory: testClient);
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'k1-hardlink-resume',
+        source: boundUrl,
+        destinationPath: destination.path,
+        expectedBytes: totalSize,
+      ),
+    );
+
+    final terminal = await waitForTerminal(downloads, 'k1-hardlink-resume');
+    expect(terminal.status, DownloadStatus.completed);
+    expect(await victim.readAsBytes(), equals(victimBytes));
+    expect(await destination.readAsBytes(), equals(payload));
+    expect(
+      requestLog.any((header) => header == 'bytes=40-'),
+      isFalse,
+      reason: 'must not resume-append into a hardlinked partial inode',
+    );
+  });
+
   test('B4 hardlinked partial does not mutate the linked victim file', () async {
     final victim = File('${tempDir.path}/victim.bin');
     await victim.writeAsBytes(utf8.encode('unchanged-victim-bytes'));
@@ -595,6 +674,18 @@ class _DirectorySyncFailPartialFileIo implements PartialFileIo {
     }
     return _delegate.syncDirectory(directoryPath);
   }
+
+  @override
+  Future<PartialFileWriter> openVerifiedPartialWriter(
+    String path, {
+    required bool append,
+    expectedIdentity,
+  }) =>
+      _delegate.openVerifiedPartialWriter(
+        path,
+        append: append,
+        expectedIdentity: expectedIdentity,
+      );
 }
 
 class _ThrowingSyncPartialFileIo implements PartialFileIo {
@@ -632,4 +723,16 @@ class _ThrowingSyncPartialFileIo implements PartialFileIo {
   @override
   Future<void> syncDirectory(String directoryPath) =>
       _delegate.syncDirectory(directoryPath);
+
+  @override
+  Future<PartialFileWriter> openVerifiedPartialWriter(
+    String path, {
+    required bool append,
+    expectedIdentity,
+  }) =>
+      _delegate.openVerifiedPartialWriter(
+        path,
+        append: append,
+        expectedIdentity: expectedIdentity,
+      );
 }

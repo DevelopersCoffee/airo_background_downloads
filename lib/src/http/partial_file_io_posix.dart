@@ -3,9 +3,12 @@ import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 
+import 'partial_file_identity.dart';
 import 'partial_file_io.dart';
 import 'partial_file_stat.dart';
+import 'partial_file_writer_posix.dart';
 
+/// POSIX desktop partial file safety (Linux + macOS).
 base class PosixPartialFileIo implements PartialFileIo {
   PosixPartialFileIo() {
     if (Platform.isLinux || Platform.isMacOS) {
@@ -53,14 +56,24 @@ base class PosixPartialFileIo implements PartialFileIo {
         ownedByUs: false,
       );
     }
-    final stat = platformLinkCountAndOwner(path);
-    final owned = stat == null || stat.uid == _uid;
+    final stat = platformLstat(path);
+    if (stat == null) {
+      return const PartialPathInspection(
+        isAbsent: false,
+        isSymlink: false,
+        isRegularFile: true,
+        linkCount: null,
+        ownedByUs: false,
+      );
+    }
+    final owned = stat.ownerUid == _uid;
     return PartialPathInspection(
       isAbsent: false,
       isSymlink: false,
       isRegularFile: true,
-      linkCount: stat?.nlink,
+      linkCount: stat.linkCount,
       ownedByUs: owned,
+      identity: stat,
     );
   }
 
@@ -147,6 +160,20 @@ base class PosixPartialFileIo implements PartialFileIo {
     } finally {
       malloc.free(pathPtr);
     }
+  }
+
+  @override
+  Future<PartialFileWriter> openVerifiedPartialWriter(
+    String path, {
+    required bool append,
+    PartialFileIdentity? expectedIdentity,
+  }) async {
+    return PosixPartialFileWriter.open(
+      path,
+      append: append,
+      currentUid: _uid,
+      expectedIdentity: expectedIdentity,
+    );
   }
 }
 

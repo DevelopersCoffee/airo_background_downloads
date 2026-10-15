@@ -1,3 +1,4 @@
+import 'partial_file_identity.dart';
 import 'partial_file_io.dart';
 
 class StubPartialFileIo implements PartialFileIo {
@@ -13,7 +14,7 @@ class StubPartialFileIo implements PartialFileIo {
 
   @override
   PartialPathSafety classifyPartialPath(String path) =>
-      const PartialPathSafety(mayAppend: true, shouldUnlinkEntry: false);
+      const PartialPathSafety(mayAppend: false, shouldUnlinkEntry: false);
 
   @override
   void unlinkPartialEntry(String path) {}
@@ -26,4 +27,13 @@ class StubPartialFileIo implements PartialFileIo {
 
   @override
   Future<void> syncDirectory(String directoryPath) async {}
+
+  @override
+  Future<PartialFileWriter> openVerifiedPartialWriter(
+    String path, {
+    required bool append,
+    PartialFileIdentity? expectedIdentity,
+  }) async {
+    throw UnsupportedError('StubPartialFileIo cannot open partial writers');
+  }
 }

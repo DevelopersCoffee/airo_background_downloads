@@ -41,9 +41,10 @@ class PartialPathGuard {
     return File(partialPath).lengthSync();
   }
 
-  void createExclusiveEmptyFile(String path) {
+  Future<void> createExclusiveEmptyFile(String path) async {
     _sanitizeOne(path);
-    File(path).createSync(exclusive: true);
+    final writer = await _io.openVerifiedPartialWriter(path, append: false);
+    await writer.close();
   }
 
   void requireSafeRegularPartialBeforeCommit(String partialPath) {

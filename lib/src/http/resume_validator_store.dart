@@ -3,6 +3,7 @@ import 'dart:io';
 
 import '../download_models.dart';
 import 'etag_utils.dart';
+import 'partial_file_identity.dart';
 import 'partial_file_io.dart';
 
 class ResumeValidatorStore {
@@ -19,7 +20,32 @@ class ResumeValidatorStore {
     final record = await _readRecord();
     if (record == null) return false;
     if (!_recordMatchesRequest(record, request)) return false;
-    return record.hasUsableValidator;
+    return record.hasStrongResumeValidator;
+  }
+
+  Future<PartialFileIdentity?> readPartialIdentityFor(
+    DownloadArtifactRequest request,
+  ) async {
+    final record = await _readRecord();
+    if (record == null || !_recordMatchesRequest(record, request)) {
+      return null;
+    }
+    return record.partialIdentity;
+  }
+
+  Future<void> attachPartialIdentity(PartialFileIdentity identity) async {
+    final existing = await _readRecord();
+    if (existing == null) return;
+    await _writeRecord(
+      _ResumeRecord(
+        source: existing.source,
+        expectedBytes: existing.expectedBytes,
+        expectedSha256: existing.expectedSha256,
+        strongEtag: existing.strongEtag,
+        lastModified: existing.lastModified,
+        partialIdentity: identity,
+      ),
+    );
   }
 
   Future<ResumeValidators?> readValidatorsFor(
@@ -29,7 +55,7 @@ class ResumeValidatorStore {
     if (record == null || !_recordMatchesRequest(record, request)) {
       return null;
     }
-    if (!record.hasUsableValidator) return null;
+    if (!record.hasStrongResumeValidator) return null;
     return ResumeValidators(
       etag: record.strongEtag,
       lastModified: record.lastModified,
@@ -39,6 +65,7 @@ class ResumeValidatorStore {
   Future<void> writeFromResponse(
     HttpClientResponse response, {
     required DownloadArtifactRequest request,
+    PartialFileIdentity? partialIdentity,
   }) async {
     final strongEtag = strongEtagOrNull(
       response.headers.value(HttpHeaders.etagHeader),
@@ -50,6 +77,7 @@ class ResumeValidatorStore {
         (lastModified == null || lastModified.isEmpty)) {
       return;
     }
+    final existing = await _readRecord();
     final record = _ResumeRecord(
       source: request.source.toString(),
       expectedBytes: request.expectedBytes,
@@ -57,6 +85,7 @@ class ResumeValidatorStore {
       strongEtag: strongEtag,
       lastModified:
           (lastModified != null && lastModified.isNotEmpty) ? lastModified : null,
+      partialIdentity: partialIdentity ?? existing?.partialIdentity,
     );
     await _writeRecord(record);
   }
@@ -122,6 +151,7 @@ class _ResumeRecord {
     this.expectedSha256,
     this.strongEtag,
     this.lastModified,
+    this.partialIdentity,
   });
 
   final String source;
@@ -129,10 +159,11 @@ class _ResumeRecord {
   final String? expectedSha256;
   final String? strongEtag;
   final String? lastModified;
+  final PartialFileIdentity? partialIdentity;
 
-  bool get hasUsableValidator =>
-      (strongEtag != null && strongEtag!.isNotEmpty) ||
-      (lastModified != null && lastModified!.isNotEmpty);
+  bool get hasStrongResumeValidator =>
+      (strongEtag?.isNotEmpty ?? false) ||
+      (lastModified?.isNotEmpty ?? false);
 
   Map<String, Object?> toMap() => {
     'source': source,
@@ -140,6 +171,7 @@ class _ResumeRecord {
     if (expectedSha256 != null) 'expectedSha256': expectedSha256,
     if (strongEtag != null) 'etag': strongEtag,
     if (lastModified != null) 'lastModified': lastModified,
+    if (partialIdentity != null) 'partialIdentity': partialIdentity!.toJson(),
   };
 
   factory _ResumeRecord.fromMap(Map<String, dynamic> map) {
@@ -149,6 +181,9 @@ class _ResumeRecord {
       expectedSha256: map['expectedSha256'] as String?,
       strongEtag: strongEtagOrNull(map['etag'] as String?),
       lastModified: map['lastModified'] as String?,
+      partialIdentity: PartialFileIdentity.fromJson(
+        map['partialIdentity'] as Map<String, dynamic>?,
+      ),
     );
   }
 }

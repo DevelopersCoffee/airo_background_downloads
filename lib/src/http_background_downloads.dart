@@ -451,6 +451,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         }
       }
 
+      if (Platform.isMacOS && doAppend) {
+        posixChmodPath(partial.path, 420);
+      }
+
       late final PartialFileWriter writer;
       try {
         writer = await _partialFileIo.openVerifiedPartialWriter(
@@ -538,10 +542,13 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       }
 
       await closeWriter();
-      if (Platform.isMacOS && job.request.expectedSha256 != null) {
-        job.macosPartialShaBytes = await readRegularFileBytesPosix(
-          partial.path,
-        );
+      if (Platform.isMacOS) {
+        posixChmodPath(partial.path, 384);
+        if (job.request.expectedSha256 != null) {
+          job.macosPartialShaBytes = await readRegularFileBytesPosix(
+            partial.path,
+          );
+        }
       }
 
       final declaredLength = _expectedResponseBodyBytes(response, parsedRange);

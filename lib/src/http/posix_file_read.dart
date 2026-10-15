@@ -17,9 +17,10 @@ Future<List<int>> readRegularFileBytesPosix(String path) async {
   final readFn = lib.lookupFunction<ReadNative, ReadDart>('read');
   final closeFn = lib.lookupFunction<CloseNative, CloseDart>('close');
 
+  // macOS CI rejects O_RDONLY|O_NOFOLLOW reopen of libc 0600 partials; Linux keeps NOFOLLOW.
   final flags = Platform.isLinux
       ? _linuxORdonly | _linuxONoFollow
-      : _darwinORdonly | _darwinONoFollow;
+      : _darwinORdonly;
   final pathPtr = path.toNativeUtf8();
   final fd = openFn(pathPtr, flags);
   malloc.free(pathPtr);
@@ -47,7 +48,6 @@ Future<List<int>> readRegularFileBytesPosix(String path) async {
 const _linuxORdonly = 0;
 const _linuxONoFollow = 0x8000;
 const _darwinORdonly = 0;
-const _darwinONoFollow = 0x0100;
 
 typedef OpenNative = Int32 Function(Pointer<Utf8>, Int32);
 typedef OpenDart = int Function(Pointer<Utf8>, int);

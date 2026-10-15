@@ -44,10 +44,8 @@ class PosixPartialFileWriter implements PartialFileWriter {
 
   @override
   Future<void> close() async {
-    if (Platform.isLinux) {
-      if (_fsync(_fd) != 0) {
-        throw FileSystemException('fsync failed for partial fd');
-      }
+    if (_fsync(_fd) != 0) {
+      throw FileSystemException('fsync failed for partial fd');
     }
     final result = _close(_fd);
     if (result != 0) {

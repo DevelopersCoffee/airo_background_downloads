@@ -115,8 +115,7 @@ base class PosixPartialFileIo implements PartialFileIo {
     }
     if (Platform.isMacOS) {
       const oRdonly = 0;
-      const oNoFollow = 0x0100;
-      final fd = _syscalls.openDirectory(path, oRdonly | oNoFollow);
+      final fd = _syscalls.openDirectory(path, oRdonly);
       if (fd < 0) {
         throw FileSystemException('Cannot open file for fsync', path);
       }

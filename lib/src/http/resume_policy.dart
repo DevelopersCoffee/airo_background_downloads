@@ -81,7 +81,11 @@ bool contentRangeHeadersPermitAppend({
   if (responseContentLength != null &&
       responseContentLength >= 0 &&
       responseContentLength != segment) {
-    return false;
+    // Some desktop HTTP clients (notably macOS) expose the full entity length
+    // on 206 instead of the range segment length; allow when it matches total.
+    if (responseContentLength != total) {
+      return false;
+    }
   }
   return true;
 }

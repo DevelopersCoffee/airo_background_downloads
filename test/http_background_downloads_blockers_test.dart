@@ -436,31 +436,35 @@ void main() {
         await request.response.flush();
         return;
       }
-      if (Platform.environment['DEBUG_N2_CANCEL'] == '1') {
-        // ignore: avoid_print
-        print(
-          'N2 server req#$requestCount range=${request.headers.value(HttpHeaders.rangeHeader)} '
-          'ifRange=${request.headers.value(HttpHeaders.ifRangeHeader)}',
+      if (requestCount == 2) {
+        if (Platform.environment['DEBUG_N2_CANCEL'] == '1') {
+          // ignore: avoid_print
+          print(
+            'N2 server req#$requestCount range=${request.headers.value(HttpHeaders.rangeHeader)} '
+            'ifRange=${request.headers.value(HttpHeaders.ifRangeHeader)}',
+          );
+        }
+        expect(
+          request.headers.value(HttpHeaders.rangeHeader),
+          equals('bytes=60000-'),
         );
+        expect(
+          request.headers.value(HttpHeaders.ifRangeHeader),
+          equals('"stream-v1"'),
+        );
+        final remainder = payload.sublist(60000);
+        request.response
+          ..statusCode = HttpStatus.partialContent
+          ..headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes 60000-${totalSize - 1}/$totalSize',
+          )
+          ..contentLength = remainder.length
+          ..add(remainder)
+          ..close();
+        return;
       }
-      expect(
-        request.headers.value(HttpHeaders.rangeHeader),
-        equals('bytes=60000-'),
-      );
-      expect(
-        request.headers.value(HttpHeaders.ifRangeHeader),
-        equals('"stream-v1"'),
-      );
-      final remainder = payload.sublist(60000);
-      request.response
-        ..statusCode = HttpStatus.partialContent
-        ..headers.set(
-          HttpHeaders.contentRangeHeader,
-          'bytes 60000-${totalSize - 1}/$totalSize',
-        )
-        ..contentLength = remainder.length
-        ..add(remainder)
-        ..close();
+      fail('Unexpected HTTP request #$requestCount during N2');
     });
 
     final downloads = HttpBackgroundDownloads(clientFactory: testClient);

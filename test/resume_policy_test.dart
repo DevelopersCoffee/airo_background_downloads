@@ -69,6 +69,19 @@ void main() {
         isTrue,
       );
     });
+
+    test('accepts 206 when Content-Length is full entity size not segment', () {
+      final range = ContentRangeSpec(start: 60000, end: 99999, total: 100000);
+      expect(
+        contentRangeHeadersPermitAppend(
+          range: range,
+          resumeOffset: 60000,
+          expectedBytes: 100000,
+          responseContentLength: 100000,
+        ),
+        isTrue,
+      );
+    });
   });
 
   group('B3 fresh download status', () {

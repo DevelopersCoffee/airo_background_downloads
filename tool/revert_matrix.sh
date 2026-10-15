@@ -90,7 +90,7 @@ expect_fail "meta" lib/src/http/resume_validator_store.dart \
 # 7) exclusive O_NOFOLLOW (Linux + Darwin patterns)
 sed_inplace 's/return _linuxOWronly | _linuxOCreat | _linuxOExcl | _linuxONoFollow;/return _linuxOWronly | _linuxOCreat;/' \
   lib/src/http/partial_file_writer_posix.dart
-sed_inplace 's/return _darwinORdwr | _darwinOCreat | _darwinOExcl | _darwinONoFollow;/return _darwinORdwr | _darwinOCreat;/' \
+sed_inplace 's/return _darwinOWronly | _darwinOCreat | _darwinOExcl | _darwinONoFollow;/return _darwinOWronly | _darwinOCreat;/' \
   lib/src/http/partial_file_writer_posix.dart
 printf '%-22s' "exclusive"
 expect_fail "exclusive" lib/src/http/partial_file_writer_posix.dart \
@@ -183,5 +183,66 @@ if run_test test/http_background_downloads_blockers_test.dart "K1 hardlinked par
 fi
 git checkout -- lib/src/http/partial_path_guard.dart lib/src/http/partial_file_writer_posix.dart
 echo "Yes"
+
+# 14) E1 variadic open mode (0600 partial create)
+if $IS_MAC; then
+  sed_inplace 's/VarArgs<(Int32,)>/Int32/' lib/src/http/posix_variadic.dart
+  sed_inplace 's/int flags, \[int mode\]/int flags, int mode/' lib/src/http/posix_variadic.dart
+else
+  sed_inplace 's/mode: 384/mode: 0/' lib/src/http/partial_file_writer_posix.dart
+fi
+printf '%-22s' "E1 open mode 0600"
+if run_test test/partial_file_mode_test.dart "exclusive partial create uses mode 0600"; then
+  git checkout -- lib/src/http/posix_variadic.dart lib/src/http/partial_file_writer_posix.dart 2>/dev/null || true
+  git checkout -- lib/src/http/partial_file_writer_posix.dart
+  fail "E1 open mode: test still passed after revert"
+fi
+git checkout -- lib/src/http/posix_variadic.dart lib/src/http/partial_file_writer_posix.dart 2>/dev/null || true
+git checkout -- lib/src/http/partial_file_writer_posix.dart
+echo "Yes"
+
+# 15) E2 never chmod foreign parent dirs
+python3 - <<'PY'
+from pathlib import Path
+p = Path("lib/src/http/download_directory_guard.dart")
+text = p.read_text()
+old = """  if (!destParent.existsSync()) {
+    destParent.createSync(recursive: true);
+  }
+
+  final paths = PartialStoragePaths.forDestination(destinationPath);"""
+new = """  if (!destParent.existsSync()) {
+    destParent.createSync(recursive: true);
+  }
+  destParent.setModeSync(448);
+
+  final paths = PartialStoragePaths.forDestination(destinationPath);"""
+if old not in text:
+    raise SystemExit("revert_matrix: E2 anchor not found")
+p.write_text(text.replace(old, new, 1))
+PY
+printf '%-22s' "E2 parent chmod"
+expect_fail "E2 parent chmod" lib/src/http/download_directory_guard.dart \
+  test/download_directory_guard_test.dart "does not chmod an existing 0755 parent directory"
+
+# 16) E3 temp-root bypass removed
+python3 - <<'PY'
+from pathlib import Path
+p = Path("lib/src/http/download_directory_guard.dart")
+text = p.read_text()
+needle = "void ensurePrivatePartialStorage(String destinationPath) {"
+insert = """void ensurePrivatePartialStorage(String destinationPath) {
+  final _parentPath = File(destinationPath).parent.path;
+  if (_parentPath == '/tmp' || _parentPath == Directory.systemTemp.path) {
+    return;
+  }"""
+if needle not in text:
+    raise SystemExit("revert_matrix: E3 anchor not found")
+text = text.replace(needle, insert, 1)
+p.write_text(text)
+PY
+printf '%-22s' "E3 temp private"
+expect_fail "E3 temp private" lib/src/http/download_directory_guard.dart \
+  test/download_directory_guard_test.dart "system temp destination uses private .airo_partials leaf"
 
 echo "Done."

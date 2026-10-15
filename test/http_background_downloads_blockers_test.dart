@@ -4,10 +4,13 @@ import 'dart:io';
 import 'package:airo_background_downloads/airo_background_downloads.dart';
 import 'package:airo_background_downloads/src/http/partial_file_io.dart';
 import 'package:airo_background_downloads/src/http/partial_file_io_posix.dart';
+import 'package:airo_background_downloads/src/http/download_directory_guard.dart';
 import 'package:airo_background_downloads/src/http/posix_file_read.dart';
 import 'package:airo_background_downloads/src/http/posix_syscalls.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'partial_test_paths.dart';
 
 Future<List<int>> _readFileBytes(String path) async {
   if (Platform.isMacOS) {
@@ -94,7 +97,8 @@ void main() {
     final stale = List<int>.filled(40, 'A'.codeUnitAt(0));
     final fullB = List<int>.filled(100, 'B'.codeUnitAt(0));
     final destination = File('${tempDir.path}/mixed.bin');
-    final partial = File('${destination.path}.partial');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
     await partial.writeAsBytes(stale);
 
     final url = await bindServer((request) async {
@@ -135,7 +139,8 @@ void main() {
   test('B2 star total Content-Range triggers clean restart', () async {
     final payload = utf8.encode('star-total-restart-payload!!');
     final destination = File('${tempDir.path}/star.bin');
-    final partial = File('${destination.path}.partial');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
     await partial.writeAsBytes(payload.sublist(0, 10));
 
     var requestCount = 0;
@@ -225,7 +230,8 @@ void main() {
     await victim.writeAsBytes(victimBytes);
 
     final destination = File('${tempDir.path}/k1-dest.bin');
-    final partial = File('${destination.path}.partial');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
     if (Platform.isWindows) {
       final linkResult = await Process.run(
         'powershell',
@@ -301,7 +307,8 @@ void main() {
     final victim = File('${tempDir.path}/victim.bin');
     await victim.writeAsBytes(utf8.encode('unchanged-victim-bytes'));
     final destination = File('${tempDir.path}/out.bin');
-    final partial = File('${destination.path}.partial');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
 
     if (Platform.isWindows) {
       final linkResult = await Process.run(
@@ -349,7 +356,8 @@ void main() {
     final destination = File('${tempDir.path}/n1.bin');
     final outsideDir = await Directory.systemTemp.createTemp('n1-outside-');
     final outsideTarget = '${outsideDir.path}/outside_target';
-    final workLinkPath = '${destination.path}.partial.work';
+    ensurePrivatePartialStorage(destination.path);
+    final workLinkPath = workPathFor(destination);
     await Link(workLinkPath).create(outsideTarget);
 
     final url = await bindServer((request) async {
@@ -507,7 +515,8 @@ void main() {
     final victim = File('${tempDir.path}/victim-prefix.bin');
     await victim.writeAsBytes(List<int>.filled(32, 7));
     final destination = File('${tempDir.path}/dest-n4.bin');
-    final partial = File('${destination.path}.partial');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
     await Link(partial.path).create(victim.path);
 
     final payload = utf8.encode('n4-full-payload-not-prefix-bytes');
@@ -550,7 +559,8 @@ void main() {
     final victim = File('${tempDir.path}/victim4.bin');
     await victim.writeAsBytes(utf8.encode('victim-original'));
     final destination = File('${tempDir.path}/dest5.bin');
-    final partial = File('${destination.path}.partial');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
     await Link(partial.path).create(victim.path);
 
     final payload = utf8.encode('symlink-safe-download-payload-b5');
@@ -663,7 +673,7 @@ void main() {
     final terminal = await waitForTerminal(downloads, 'b7-fsync');
     expect(terminal.status, DownloadStatus.failed);
     expect(await _readFileString(destination.path), equals('keep-me'));
-    expect(File('${destination.path}.partial').existsSync(), isTrue);
+    expect(File(partialPathFor(destination)).existsSync(), isTrue);
   });
 }
 

@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import 'background_downloads.dart';
@@ -9,9 +8,8 @@ import 'download_models.dart';
 import 'http/partial_file_identity.dart';
 import 'http/partial_file_io.dart';
 import 'http/download_directory_guard.dart';
+import 'http/partial_storage_paths.dart';
 import 'http/partial_path_guard.dart';
-import 'http/partial_file_stat.dart';
-import 'http/posix_file_read.dart';
 import 'http/resume_policy.dart';
 import 'http/resume_validator_store.dart';
 import 'processors/streaming_checksum.dart';
@@ -152,19 +150,19 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
   }
 
   Future<void> _runDownload(_HttpDownloadJob job) async {
-    final partialPath = '${job.request.destinationPath}.partial';
-    final partial = File(partialPath);
     final destination = File(job.request.destinationPath);
+    final storage = PartialStoragePaths.forDestination(destination.path);
+    final partialPath = storage.partialPath;
+    final partial = File(partialPath);
     final validatorStore = ResumeValidatorStore(
       partialPath,
       partialFileIo: _partialFileIo,
     );
-    final parent = destination.parent;
 
     _pathGuard.sanitizeAllForJob(
       destinationPath: destination.path,
       partialPath: partialPath,
-      metaPath: '$partialPath.meta',
+      metaPath: storage.metaPath,
     );
 
     job.status = DownloadStatus.downloading;
@@ -177,7 +175,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     final startedAt = DateTime.now();
 
     try {
-      ensurePrivateDownloadDirectory(parent.path);
+      ensurePrivatePartialStorage(destination.path);
       await _downloadBody(job, client, partial, validatorStore, startedAt);
 
       if (job.cancelRequested) {
@@ -203,11 +201,8 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       final expectedSha256 = job.request.expectedSha256;
       final shaOk = expectedSha256 == null
           ? true
-          : job.macosPartialShaBytes != null
-          ? _sha256HexMatches(job.macosPartialShaBytes!, expectedSha256)
           : await fileMatchesSha256Hex(partial, expectedSha256);
       if (expectedSha256 != null && !shaOk) {
-        job.macosPartialShaBytes = null;
         await _discardPartial(partial, validatorStore);
         job.status = DownloadStatus.failed;
         job.failure = const DownloadFailure(
@@ -217,8 +212,6 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         _emit(job.snapshot());
         return;
       }
-      job.macosPartialShaBytes = null;
-
       final hook = _onBeforeCommitPartial;
       var runBeforeCommitHook = false;
       assert(() {
@@ -412,30 +405,12 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         );
       }
 
-      PartialFileIdentity? identityForOpen = expectedIdentity;
-      if (Platform.isMacOS && doAppend) {
-        final storedOffset = await validatorStore.readResumeByteOffsetFor(
-          job.request,
-        );
-        final partialSize = platformPathFileSize(partial.path);
-        if (storedOffset != null &&
-            partialSize != null &&
-            storedOffset == partialSize &&
-            storedOffset == resumeOffset) {
-          identityForOpen = null;
-        }
-      }
-
-      if (Platform.isMacOS && doAppend) {
-        posixChmodPath(partial.path, 420);
-      }
-
       late final PartialFileWriter writer;
       try {
         writer = await _partialFileIo.openVerifiedPartialWriter(
           partial.path,
           append: doAppend,
-          expectedIdentity: identityForOpen,
+          expectedIdentity: expectedIdentity,
         );
         job.partialOpenFailures = 0;
       } on FileSystemException {
@@ -506,14 +481,6 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       }
 
       await closeWriter();
-      if (Platform.isMacOS) {
-        posixChmodPath(partial.path, 384);
-        if (job.request.expectedSha256 != null) {
-          job.macosPartialShaBytes = await readRegularFileBytesPosix(
-            partial.path,
-          );
-        }
-      }
 
       final declaredLength = _expectedResponseBodyBytes(response, parsedRange);
       if (declaredLength != null && bytesReceived != declaredLength) {
@@ -563,7 +530,9 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
   }
 
   Future<void> _persistPartialProgress(_HttpDownloadJob job) async {
-    final partialPath = '${job.request.destinationPath}.partial';
+    final partialPath =
+        PartialStoragePaths.forDestination(job.request.destinationPath)
+            .partialPath;
     final inspection = _partialFileIo.inspectPath(partialPath);
     if (!inspection.isSafeRegularFileOwnedByUs) return;
     if (job.downloadedBytes == 0) return;
@@ -661,9 +630,6 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     await _partialFileIo.syncFile(partial.path);
     await _partialFileIo.syncDirectory(destination.parent.path);
     await partial.rename(destination.path);
-    if (Platform.isMacOS) {
-      posixChmodPath(destination.path, 420); // 0644 under private download dirs
-    }
     await _partialFileIo.syncDirectory(destination.parent.path);
     validatorStore.deleteSync();
     _partialFileIo.unlinkPartialEntry('${partial.path}.work');
@@ -680,11 +646,6 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
 
   Future<void> _drainResponse(HttpClientResponse response) async {
     await for (final _ in response.timeout(_idleReadTimeout)) {}
-  }
-
-  bool _sha256HexMatches(List<int> bytes, String expectedHex) {
-    final digest = sha256.convert(bytes).toString();
-    return digest.toLowerCase() == expectedHex.trim().toLowerCase();
   }
 
   void _emit(DownloadProgress progress) {
@@ -709,7 +670,6 @@ class _HttpDownloadJob {
   HttpClient? client;
   bool serverAdvertisedResume = false;
   int partialOpenFailures = 0;
-  List<int>? macosPartialShaBytes;
   Completer<void>? runCycle;
 
   DownloadProgress queued() => DownloadProgress(

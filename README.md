@@ -21,7 +21,11 @@ When using `HttpBackgroundDownloads`, there is **no default byte cap** on respon
 
 ### macOS coverage
 
-CI runs on **macOS arm64** (`macos-latest`) and **Intel macOS** (`macos-13`) in the matrix. Intel runners are often capacity-limited; the `macos-13` job is **non-blocking** (`continue-on-error`), so **Intel macOS is not always verified in CI**. Darwin `stat` parsing prefers `lstat$INODE64` / `fstat$INODE64` on all 64-bit macOS targets.
+CI runs on **macOS arm64** (`macos-latest`). An optional **Intel macOS** (`macos-13`) job is **non-blocking** when runners are available. **Intel macOS support is not claimed** — behavior on Intel Macs is best-effort only until that job runs reliably. Darwin `stat` parsing uses `lstat$INODE64` / `fstat$INODE64` on 64-bit macOS (fail closed on Intel when those symbols are missing).
+
+### Partial file layout (desktop HTTP)
+
+Partial downloads and `.meta` sidecars live under a dedicated **`.airo_partials/`** directory next to the destination file. That leaf is created as **0700** and verified; parent directories (including `/tmp` or `Directory.systemTemp`) are **never chmodded**.
 
 ---
 

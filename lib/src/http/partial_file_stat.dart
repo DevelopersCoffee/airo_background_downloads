@@ -5,6 +5,7 @@ import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 
 import 'partial_file_identity.dart';
+import 'posix_variadic.dart';
 
 /// lstat/fstat without following symlinks. Returns null on failure.
 PartialFileIdentity? platformLstat(String path) {
@@ -50,33 +51,35 @@ typedef _StatFdNative = Int32 Function(Int32, Pointer<Void>);
 typedef _StatFdDart = int Function(int, Pointer<Void>);
 
 _StatPathDart? _lookupDarwinLstat(DynamicLibrary lib) {
-  if (Platform.isMacOS) {
-    try {
-      return lib.lookupFunction<_StatPathNative, _StatPathDart>(
-        'lstat\$INODE64',
-      );
-    } on Object {
-      // Fall back below.
-    }
-  }
+  if (!Platform.isMacOS) return null;
   try {
-    return lib.lookupFunction<_StatPathNative, _StatPathDart>('lstat');
+    return lib.lookupFunction<_StatPathNative, _StatPathDart>(
+      'lstat\$INODE64',
+    );
   } on Object {
+    if (Abi.current() == Abi.macosArm64) {
+      try {
+        return lib.lookupFunction<_StatPathNative, _StatPathDart>('lstat');
+      } on Object {
+        return null;
+      }
+    }
     return null;
   }
 }
 
 _StatFdDart? _lookupDarwinFstat(DynamicLibrary lib) {
-  if (Platform.isMacOS) {
-    try {
-      return lib.lookupFunction<_StatFdNative, _StatFdDart>('fstat\$INODE64');
-    } on Object {
-      // Fall back below.
-    }
-  }
+  if (!Platform.isMacOS) return null;
   try {
-    return lib.lookupFunction<_StatFdNative, _StatFdDart>('fstat');
+    return lib.lookupFunction<_StatFdNative, _StatFdDart>('fstat\$INODE64');
   } on Object {
+    if (Abi.current() == Abi.macosArm64) {
+      try {
+        return lib.lookupFunction<_StatFdNative, _StatFdDart>('fstat');
+      } on Object {
+        return null;
+      }
+    }
     return null;
   }
 }
@@ -300,19 +303,18 @@ int? platformFstatFileSize(int fd) {
 /// File size from fstat after `open(O_RDONLY)` (no follow on Linux).
 int? platformPathFileSizeFstat(String path) {
   if (!Platform.isLinux && !Platform.isMacOS) return null;
-  final lib = DynamicLibrary.open(
-    Platform.isLinux ? 'libc.so.6' : 'libSystem.dylib',
-  );
-  final openFn = lib.lookupFunction<
-      Int32 Function(Pointer<Utf8>, Int32),
-      int Function(Pointer<Utf8>, int)>('open');
+  final lib = posixLib();
   final closeFn = lib.lookupFunction<
       Int32 Function(Int32),
       int Function(int)>('close');
-  final flags = Platform.isLinux ? 0x8000 /* O_RDONLY|O_NOFOLLOW */ : 0;
-  final pathPtr = path.toNativeUtf8();
-  final fd = openFn(pathPtr, flags);
-  malloc.free(pathPtr);
+  const linuxORdonly = 0;
+  const linuxONoFollow = 0x8000;
+  const darwinORdonly = 0;
+  const darwinONoFollow = 0x0100;
+  final flags = Platform.isLinux
+      ? linuxORdonly | linuxONoFollow
+      : darwinORdonly | darwinONoFollow;
+  final fd = posixOpen(path, flags);
   if (fd < 0) return null;
   try {
     return platformFstatFileSize(fd);

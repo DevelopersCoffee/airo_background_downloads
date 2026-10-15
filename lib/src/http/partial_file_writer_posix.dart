@@ -183,7 +183,6 @@ const _linuxONoFollow = 0x8000; // 0100000 octal
 const _darwinORdwr = 0x0002;
 const _darwinOCreat = 0x0200;
 const _darwinOExcl = 0x0800;
-const _darwinOAppend = 0x0008;
 const _darwinONoFollow = 0x0100;
 
 typedef OpenNative = Int32 Function(Pointer<Utf8>, Int32, Int32);

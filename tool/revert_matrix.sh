@@ -87,10 +87,52 @@ printf '%-22s' "connect timeout"
 expect_fail "connect timeout" lib/src/http_background_downloads.dart \
   test/k2_security_regressions_test.dart "K2 connection timeout fails unreachable host quickly"
 
-# 10) openVerified writer nlink (K1 hardlink)
+# 10) openVerified write path (K1): verified open + sanitize must block hardlink resume
+python3 - <<'PY'
+from pathlib import Path
+p = Path("lib/src/http/partial_path_guard.dart")
+text = p.read_text()
+sanitize_old = """  void _sanitizeOne(String path) {
+    final inspection = _io.inspectPath(path);
+    if (inspection.isAbsent) return;
+    if (inspection.isSafeRegularFileOwnedByUs) return;
+    _io.unlinkPartialEntry(path);
+  }"""
+sanitize_new = """  void _sanitizeOne(String path) {
+    final inspection = _io.inspectPath(path);
+    if (inspection.isAbsent) return;
+    if (inspection.isSafeRegularFileOwnedByUs) return;
+  }"""
+bytes_old = """  int reusablePartialBytes(String partialPath) {
+    final inspection = _io.inspectPath(partialPath);
+    if (!inspection.isSafeRegularFileOwnedByUs) {
+      if (!inspection.isAbsent) {
+        _io.unlinkPartialEntry(partialPath);
+      }
+      return 0;
+    }
+    return File(partialPath).lengthSync();
+  }"""
+bytes_new = """  int reusablePartialBytes(String partialPath) {
+    if (_io.inspectPath(partialPath).isAbsent) return 0;
+    return File(partialPath).lengthSync();
+  }"""
+for label, old, new in (
+    ("sanitize", sanitize_old, sanitize_new),
+    ("reusablePartialBytes", bytes_old, bytes_new),
+):
+    if old not in text:
+        raise SystemExit(f"revert_matrix: {label} block not found")
+    text = text.replace(old, new, 1)
+p.write_text(text)
+PY
 sed -i 's/if (stat.linkCount != 1)/if (false)/' lib/src/http/partial_file_writer_posix.dart
 printf '%-22s' "openVerified (K1)"
-expect_fail "openVerified" lib/src/http/partial_file_writer_posix.dart \
-  test/http_background_downloads_blockers_test.dart "K1 hardlinked partial with validator"
+if run_test test/http_background_downloads_blockers_test.dart "K1 hardlinked partial with validator"; then
+  git checkout -- lib/src/http/partial_path_guard.dart lib/src/http/partial_file_writer_posix.dart
+  fail "openVerified: test still passed after revert"
+fi
+git checkout -- lib/src/http/partial_path_guard.dart lib/src/http/partial_file_writer_posix.dart
+echo "Yes"
 
 echo "Done."

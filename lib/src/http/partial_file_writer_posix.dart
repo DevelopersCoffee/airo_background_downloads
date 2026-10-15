@@ -107,14 +107,15 @@ int _openFlagsAppend() {
   if (Platform.isLinux) {
     return _linuxOWronly | _linuxOAppend | _linuxONoFollow;
   }
-  return _darwinOWronly | _darwinOAppend | _darwinONoFollow;
+  // macOS: O_RDWR so a concurrent read handle (e.g. fsync) is not EACCES while writing.
+  return _darwinORdwr | _darwinOAppend | _darwinONoFollow;
 }
 
 int _openFlagsCreateExclusive() {
   if (Platform.isLinux) {
     return _linuxOWronly | _linuxOCreat | _linuxOExcl | _linuxONoFollow;
   }
-  return _darwinOWronly | _darwinOCreat | _darwinOExcl | _darwinONoFollow;
+  return _darwinORdwr | _darwinOCreat | _darwinOExcl | _darwinONoFollow;
 }
 
 // Linux fcntl.h
@@ -125,7 +126,7 @@ const _linuxOAppend = 1024;
 const _linuxONoFollow = 0x8000; // 0100000 octal
 
 // Darwin fcntl.h
-const _darwinOWronly = 0x0001;
+const _darwinORdwr = 0x0002;
 const _darwinOCreat = 0x0200;
 const _darwinOExcl = 0x0800;
 const _darwinOAppend = 0x0008;

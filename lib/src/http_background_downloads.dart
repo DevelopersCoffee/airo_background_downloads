@@ -109,7 +109,6 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     if (job == null) return;
     job.cancelRequested = true;
     job.client?.close(force: true);
-    await _persistPartialProgress(job);
     job.status = DownloadStatus.cancelled;
     _emit(
       DownloadProgress(
@@ -384,10 +383,17 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       }
 
       var bytesReceived = 0;
+      var writerClosed = false;
+      Future<void> closeWriter() async {
+        if (writerClosed) return;
+        await writer.close();
+        writerClosed = true;
+      }
+
       try {
         await for (final chunk in response.timeout(_idleReadTimeout)) {
           if (job.cancelRequested) {
-            await writer.close();
+            await closeWriter();
             await _partialFileIo.syncFile(partial.path);
             return;
           }
@@ -402,10 +408,11 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
           _emit(job.snapshot());
         }
       } on TimeoutException {
+        await closeWriter();
         await _partialFileIo.syncFile(partial.path);
         throw HttpException('HTTP idle read timeout');
       } finally {
-        await writer.close();
+        await closeWriter();
       }
 
       final declaredLength = _normalizedContentLength(response);

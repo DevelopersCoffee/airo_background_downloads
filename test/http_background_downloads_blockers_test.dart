@@ -4,9 +4,21 @@ import 'dart:io';
 import 'package:airo_background_downloads/airo_background_downloads.dart';
 import 'package:airo_background_downloads/src/http/partial_file_io.dart';
 import 'package:airo_background_downloads/src/http/partial_file_io_posix.dart';
+import 'package:airo_background_downloads/src/http/posix_file_read.dart';
 import 'package:airo_background_downloads/src/http/posix_syscalls.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+Future<List<int>> _readFileBytes(String path) async {
+  if (Platform.isMacOS) {
+    return readRegularFileBytesPosix(path);
+  }
+  return File(path).readAsBytes();
+}
+
+Future<String> _readFileString(String path) async {
+  return utf8.decode(await _readFileBytes(path));
+}
 
 void main() {
   late SecurityContext serverContext;
@@ -117,7 +129,7 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'b1-no-validator');
     expect(terminal.status, DownloadStatus.completed);
-    expect(await destination.readAsBytes(), equals(fullB));
+    expect(await _readFileBytes(destination.path), equals(fullB));
   });
 
   test('B2 star total Content-Range triggers clean restart', () async {
@@ -159,7 +171,7 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'b2-star-total');
     expect(terminal.status, DownloadStatus.completed);
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileBytes(destination.path), equals(payload));
     expect(requestCount, equals(2));
   });
 
@@ -202,7 +214,7 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'b3-no-range-206');
     expect(terminal.status, DownloadStatus.completed);
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileBytes(destination.path), equals(payload));
     expect(requestCount, equals(2));
   });
 
@@ -276,8 +288,8 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'k1-hardlink-resume');
     expect(terminal.status, DownloadStatus.completed);
-    expect(await victim.readAsBytes(), equals(victimBytes));
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileBytes(victim.path), equals(victimBytes));
+    expect(await _readFileBytes(destination.path), equals(payload));
     expect(
       requestLog.any((header) => header == 'bytes=40-'),
       isFalse,
@@ -328,8 +340,8 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'b4-hardlink');
     expect(terminal.status, DownloadStatus.completed);
-    expect(await victim.readAsString(), equals('unchanged-victim-bytes'));
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileString(victim.path), equals('unchanged-victim-bytes'));
+    expect(await _readFileBytes(destination.path), equals(payload));
   });
 
   test('N1 dangling partial.work symlink is not followed during download', () async {
@@ -374,7 +386,7 @@ void main() {
       FileSystemEntity.typeSync(destination.path, followLinks: false),
       FileSystemEntityType.file,
     );
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileBytes(destination.path), equals(payload));
     expect(File(outsideTarget).existsSync(), isFalse);
     await outsideDir.delete(recursive: true);
   });
@@ -449,7 +461,7 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'n2-interrupted');
     expect(terminal.status, DownloadStatus.completed);
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileBytes(destination.path), equals(payload));
     expect(requestCount, equals(2));
     expect(requestLog[1], equals('bytes=60000-'));
   });
@@ -484,7 +496,7 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'n3-dir-fsync');
     expect(terminal.status, DownloadStatus.failed);
-    expect(await destination.readAsString(), equals('prior'));
+    expect(await _readFileString(destination.path), equals('prior'));
   });
 
   test('N4 symlinked partial entry is unlinked before streaming', () async {
@@ -527,7 +539,7 @@ void main() {
     final terminal = await waitForTerminal(downloads, 'n4-symlink-unlink');
     expect(terminal.status, DownloadStatus.completed);
     expect(await victim.length(), equals(32));
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileBytes(destination.path), equals(payload));
   });
 
   test('B5 symlinked partial does not append through to victim', () async {
@@ -574,16 +586,16 @@ void main() {
       FileSystemEntity.typeSync(partial.path, followLinks: false),
       isNot(FileSystemEntityType.link),
     );
-    expect(await victim.readAsString(), equals('victim-original'));
+    expect(await _readFileString(victim.path), equals('victim-original'));
 
     final terminal = await waitForTerminal(downloads, 'b5-symlink');
     expect(terminal.status, DownloadStatus.completed);
-    expect(await victim.readAsString(), equals('victim-original'));
+    expect(await _readFileString(victim.path), equals('victim-original'));
     expect(
       FileSystemEntity.typeSync(destination.path, followLinks: false),
       FileSystemEntityType.file,
     );
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileBytes(destination.path), equals(payload));
   });
 
   test('B6 commit leaves foreign destination.old untouched', () async {
@@ -613,8 +625,8 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'b6-old-file');
     expect(terminal.status, DownloadStatus.completed);
-    expect(await foreignOld.readAsString(), equals('foreign-old-must-survive'));
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileString(foreignOld.path), equals('foreign-old-must-survive'));
+    expect(await _readFileBytes(destination.path), equals(payload));
   });
 
   test('B7 sync failure before rename keeps prior destination', () async {
@@ -646,7 +658,7 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'b7-fsync');
     expect(terminal.status, DownloadStatus.failed);
-    expect(await destination.readAsString(), equals('keep-me'));
+    expect(await _readFileString(destination.path), equals('keep-me'));
     expect(File('${destination.path}.partial').existsSync(), isTrue);
   });
 }

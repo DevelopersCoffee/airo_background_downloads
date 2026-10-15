@@ -422,6 +422,9 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         await closeWriter();
         await _partialFileIo.syncFile(partial.path);
         throw HttpException('HTTP idle read timeout');
+      } on Object {
+        await closeWriter();
+        rethrow;
       }
 
       if (Platform.isMacOS && job.request.expectedSha256 != null) {

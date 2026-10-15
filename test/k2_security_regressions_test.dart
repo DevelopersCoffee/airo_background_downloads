@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:airo_background_downloads/airo_background_downloads.dart';
 import 'package:airo_background_downloads/src/http/partial_file_identity.dart';
 import 'package:airo_background_downloads/src/http/partial_file_io.dart';
+import 'package:airo_background_downloads/src/http/partial_file_io_posix.dart';
 import 'package:airo_background_downloads/src/http/partial_path_guard.dart';
 import 'package:airo_background_downloads/src/http/partial_file_stat.dart';
 import 'package:airo_background_downloads/src/http/resume_validator_store.dart';
@@ -156,6 +157,22 @@ void main() {
       FileSystemEntity.typeSync(path, followLinks: false),
       FileSystemEntityType.file,
     );
+  });
+
+  test('K2 O_NOFOLLOW exclusive open refuses symlink partial target', () async {
+    if (!Platform.isLinux && !Platform.isMacOS) return;
+    final dir = await Directory.systemTemp.createTemp('excl-symlink-');
+    addTearDown(() => dir.delete(recursive: true));
+    final victim = File('${dir.path}/victim.txt');
+    await victim.writeAsString('untouched');
+    final partialPath = '${dir.path}/dl.partial';
+    await Link(partialPath).create(victim.path);
+    final io = PosixPartialFileIo();
+    await expectLater(
+      io.openVerifiedPartialWriter(partialPath, append: false),
+      throwsA(isA<FileSystemException>()),
+    );
+    expect(await victim.readAsString(), equals('untouched'));
   });
 
   test('K2 pre-commit refuses symlink partial', () {

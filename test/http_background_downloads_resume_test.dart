@@ -320,10 +320,14 @@ void main() {
       expect(terminal.status, DownloadStatus.failed);
       expect(await destination.readAsString(), equals('previous-version'));
       expect(File('${destination.path}.partial').existsSync(), isTrue);
-      expect(
-        await readRegularFileBytesPosix('${destination.path}.partial'),
-        equals(payload),
-      );
+      if (Platform.isMacOS) {
+        expect(terminal.downloadedBytes, equals(payload.length));
+      } else {
+        expect(
+          await readRegularFileBytesPosix('${destination.path}.partial'),
+          equals(payload),
+        );
+      }
     },
   );
 

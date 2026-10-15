@@ -43,11 +43,37 @@ class PosixPartialFileWriter implements PartialFileWriter {
   }
 
   @override
-  Future<void> close() async {
-    if (Platform.isLinux) {
-      if (_fsync(_fd) != 0) {
-        throw FileSystemException('fsync failed for partial fd');
+  Future<List<int>> readAllBytesFromOpenFd() async {
+    final lib = DynamicLibrary.open(
+      Platform.isLinux ? 'libc.so.6' : 'libSystem.dylib',
+    );
+    final lseekFn = lib.lookupFunction<LseekNative, LseekDart>('lseek');
+    final readFn = lib.lookupFunction<ReadNative, ReadDart>('read');
+    final offset = lseekFn(_fd, 0, _seekSet);
+    if (offset < 0) {
+      throw FileSystemException('lseek failed for partial fd');
+    }
+    final chunks = <int>[];
+    final buffer = calloc<Uint8>(65536);
+    try {
+      while (true) {
+        final n = readFn(_fd, buffer.cast(), 65536);
+        if (n < 0) {
+          throw FileSystemException('read failed for partial fd');
+        }
+        if (n == 0) break;
+        chunks.addAll(buffer.asTypedList(n));
       }
+    } finally {
+      calloc.free(buffer);
+    }
+    return chunks;
+  }
+
+  @override
+  Future<void> close() async {
+    if (_fsync(_fd) != 0) {
+      throw FileSystemException('fsync failed for partial fd');
     }
     final result = _close(_fd);
     if (result != 0) {
@@ -154,3 +180,9 @@ typedef WriteNative =
 typedef WriteDart = int Function(int fd, Pointer<Void> buf, int count);
 typedef FsyncNative = Int32 Function(Int32);
 typedef FsyncDart = int Function(int);
+typedef LseekNative = Int64 Function(Int32, Int64, Int32);
+typedef LseekDart = int Function(int, int, int);
+typedef ReadNative = IntPtr Function(Int32, Pointer<Void>, IntPtr);
+typedef ReadDart = int Function(int, Pointer<Void>, int);
+
+const _seekSet = 0;

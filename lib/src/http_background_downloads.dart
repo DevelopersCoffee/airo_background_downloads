@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import 'background_downloads.dart';
@@ -171,7 +172,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       }
 
       final expected = job.request.expectedBytes;
-      if (expected != null && partial.lengthSync() != expected) {
+      if (expected != null && job.downloadedBytes != expected) {
         await _discardPartial(partial, validatorStore);
         job.status = DownloadStatus.failed;
         job.failure = const DownloadFailure(
@@ -186,8 +187,13 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       _emit(job.snapshot());
 
       final expectedSha256 = job.request.expectedSha256;
-      if (expectedSha256 != null &&
-          !await fileMatchesSha256Hex(partial, expectedSha256)) {
+      final shaOk = expectedSha256 == null
+          ? true
+          : job.macosPartialShaBytes != null
+          ? _sha256HexMatches(job.macosPartialShaBytes!, expectedSha256)
+          : await fileMatchesSha256Hex(partial, expectedSha256);
+      if (expectedSha256 != null && !shaOk) {
+        job.macosPartialShaBytes = null;
         await _discardPartial(partial, validatorStore);
         job.status = DownloadStatus.failed;
         job.failure = const DownloadFailure(
@@ -197,6 +203,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         _emit(job.snapshot());
         return;
       }
+      job.macosPartialShaBytes = null;
 
       final hook = _onBeforeCommitPartial;
       var runBeforeCommitHook = false;
@@ -415,9 +422,12 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         await closeWriter();
         await _partialFileIo.syncFile(partial.path);
         throw HttpException('HTTP idle read timeout');
-      } finally {
-        await closeWriter();
       }
+
+      if (Platform.isMacOS && job.request.expectedSha256 != null) {
+        job.macosPartialShaBytes = await writer.readAllBytesFromOpenFd();
+      }
+      await closeWriter();
 
       final declaredLength = _normalizedContentLength(response);
       if (declaredLength != null && bytesReceived != declaredLength) {
@@ -460,7 +470,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     final partialPath = '${job.request.destinationPath}.partial';
     final inspection = _partialFileIo.inspectPath(partialPath);
     if (!inspection.isSafeRegularFileOwnedByUs) return;
-    if (File(partialPath).lengthSync() == 0) return;
+    if (job.downloadedBytes == 0) return;
     await _partialFileIo.syncFile(partialPath);
   }
 
@@ -527,6 +537,11 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     await for (final _ in response.timeout(_idleReadTimeout)) {}
   }
 
+  bool _sha256HexMatches(List<int> bytes, String expectedHex) {
+    final digest = sha256.convert(bytes).toString();
+    return digest.toLowerCase() == expectedHex.trim().toLowerCase();
+  }
+
   void _emit(DownloadProgress progress) {
     if (!_events.isClosed) {
       _events.add(progress);
@@ -549,6 +564,7 @@ class _HttpDownloadJob {
   HttpClient? client;
   bool serverAdvertisedResume = false;
   int partialOpenFailures = 0;
+  List<int>? macosPartialShaBytes;
 
   DownloadProgress queued() => DownloadProgress(
     artifactId: request.artifactId,

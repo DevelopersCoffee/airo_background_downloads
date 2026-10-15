@@ -113,6 +113,10 @@ base class PosixPartialFileIo implements PartialFileIo {
     if (!File(path).existsSync()) {
       throw FileSystemException('Cannot fsync missing file', path);
     }
+    if (Platform.isMacOS) {
+      // Durability is handled by fsync on the partial fd in PosixPartialFileWriter.close().
+      return;
+    }
     final raf = await File(path).open(mode: FileMode.read);
     try {
       await raf.flush();

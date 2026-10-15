@@ -73,5 +73,10 @@ abstract class PartialFileWriter {
 
   void writeBytes(List<int> bytes);
 
+  /// Reads the entire partial from the open fd (POSIX only, before [close]).
+  Future<List<int>> readAllBytesFromOpenFd() async {
+    throw UnsupportedError('readAllBytesFromOpenFd');
+  }
+
   Future<void> close();
 }

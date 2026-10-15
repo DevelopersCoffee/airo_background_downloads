@@ -28,6 +28,15 @@ class DartAppendPartialWriter implements PartialFileWriter {
   }
 
   @override
+  Future<List<int>> readAllBytesFromOpenFd() async {
+    final pos = await _raf.position();
+    await _raf.setPosition(0);
+    final bytes = await _raf.read(await _raf.length());
+    await _raf.setPosition(pos);
+    return bytes;
+  }
+
+  @override
   Future<void> close() async {
     await _raf.flush();
     await _raf.close();
@@ -66,6 +75,15 @@ class DartCreatePartialWriter implements PartialFileWriter {
   @override
   void writeBytes(List<int> bytes) {
     _raf.writeFromSync(bytes);
+  }
+
+  @override
+  Future<List<int>> readAllBytesFromOpenFd() async {
+    final pos = await _raf.position();
+    await _raf.setPosition(0);
+    final bytes = await _raf.read(await _raf.length());
+    await _raf.setPosition(pos);
+    return bytes;
   }
 
   @override

@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'partial_file_identity.dart';
 import 'partial_file_io.dart';
 import 'partial_file_stat.dart';
+import 'partial_file_writer_dart.dart';
 import 'partial_file_writer_posix.dart';
 import 'posix_syscalls.dart';
 
@@ -113,6 +114,22 @@ base class PosixPartialFileIo implements PartialFileIo {
     if (!File(path).existsSync()) {
       throw FileSystemException('Cannot fsync missing file', path);
     }
+    if (Platform.isMacOS) {
+      final fd = _syscalls.openDirectory(path, _oRdonly);
+      if (fd < 0) {
+        throw FileSystemException('Cannot open file for fsync', path);
+      }
+      try {
+        if (_syscalls.fsync(fd) != 0) {
+          throw FileSystemException('fsync failed for file', path);
+        }
+      } finally {
+        if (_syscalls.close(fd) != 0) {
+          throw FileSystemException('close failed for file fsync fd', path);
+        }
+      }
+      return;
+    }
     final raf = await File(path).open(mode: FileMode.read);
     try {
       await raf.flush();
@@ -153,6 +170,21 @@ base class PosixPartialFileIo implements PartialFileIo {
     required bool append,
     PartialFileIdentity? expectedIdentity,
   }) async {
+    if (Platform.isMacOS) {
+      final inspection = inspectPath(path);
+      if (append) {
+        if (expectedIdentity != null &&
+            inspection.identity != null &&
+            !expectedIdentity.matches(inspection.identity!)) {
+          throw FileSystemException(
+            'Refusing to append: partial identity changed',
+            path,
+          );
+        }
+        return DartAppendPartialWriter.open(path, inspection);
+      }
+      return DartCreatePartialWriter.createEmpty(this, path);
+    }
     return PosixPartialFileWriter.open(
       path,
       append: append,

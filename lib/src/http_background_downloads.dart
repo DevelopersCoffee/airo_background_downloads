@@ -11,6 +11,7 @@ import 'http/partial_file_io.dart';
 import 'http/download_directory_guard.dart';
 import 'http/partial_path_guard.dart';
 import 'http/partial_file_stat.dart';
+import 'http/posix_file_read.dart';
 import 'http/resume_policy.dart';
 import 'http/resume_validator_store.dart';
 import 'processors/streaming_checksum.dart';
@@ -536,10 +537,12 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         rethrow;
       }
 
-      if (Platform.isMacOS && job.request.expectedSha256 != null) {
-        job.macosPartialShaBytes = await writer.readAllBytesFromOpenFd();
-      }
       await closeWriter();
+      if (Platform.isMacOS && job.request.expectedSha256 != null) {
+        job.macosPartialShaBytes = await readRegularFileBytesPosix(
+          partial.path,
+        );
+      }
 
       final declaredLength = _expectedResponseBodyBytes(response, parsedRange);
       if (declaredLength != null && bytesReceived != declaredLength) {

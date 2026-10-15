@@ -161,8 +161,8 @@ int _openFlagsAppend() {
   if (Platform.isLinux) {
     return _linuxOWronly | _linuxOAppend | _linuxONoFollow;
   }
-  // macOS: O_RDWR (seek-to-end after open) so append reopen works on 0600 partials.
-  return _darwinORdwr;
+  // macOS: O_WRONLY + seek-to-end (O_RDWR append reopen fails on 0600 partials in CI).
+  return _darwinOWronly;
 }
 
 int _openFlagsCreateExclusive() {
@@ -181,6 +181,7 @@ const _linuxONoFollow = 0x8000; // 0100000 octal
 
 // Darwin fcntl.h
 const _darwinORdwr = 0x0002;
+const _darwinOWronly = 0x0001;
 const _darwinOCreat = 0x0200;
 const _darwinOExcl = 0x0800;
 const _darwinONoFollow = 0x0100;

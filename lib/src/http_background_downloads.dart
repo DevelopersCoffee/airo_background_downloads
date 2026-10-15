@@ -292,14 +292,14 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       }
 
       final outgoing = await client.getUrl(job.request.source);
-      outgoing.followRedirects = true;
+      outgoing.followRedirects = !maySendRange;
       outgoing.maxRedirects = 8;
       for (final entry in job.request.headers.entries) {
         outgoing.headers.set(entry.key, entry.value);
       }
       if (maySendRange) {
-        outgoing.headers.set(HttpHeaders.rangeHeader, 'bytes=$resumeOffset-');
         await applyIfRangeFromStore(outgoing, validatorStore, job.request);
+        outgoing.headers.set(HttpHeaders.rangeHeader, 'bytes=$resumeOffset-');
       }
       assert(() {
         if (Platform.environment['DEBUG_N2_CANCEL'] == '1') {
@@ -307,7 +307,8 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
           print(
             'N2 debug getUrl artifact=${job.request.artifactId} '
             'storedOffset=$storedOffset resumeOffset=$resumeOffset '
-            'maySendRange=$maySendRange shaPin=$hasShaPin validator=$hasValidator',
+            'maySendRange=$maySendRange shaPin=$hasShaPin validator=$hasValidator '
+            'outRange=${outgoing.headers.value(HttpHeaders.rangeHeader)}',
           );
         }
         return true;

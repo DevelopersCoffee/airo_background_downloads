@@ -45,9 +45,9 @@ import 'package:ffi/ffi.dart';
   final createFileW = kernel32.lookupFunction<CreateFileWNative, CreateFileWDart>(
     'CreateFileW',
   );
-  final getInfo = kernel32.lookupFunction<GetInfoNative, GetInfoDart>(
-    'GetFileInformationByHandle',
-  );
+  final getInfo = kernel32.lookupFunction<
+      GetFileInformationByHandleNative,
+      GetFileInformationByHandleDart>('GetFileInformationByHandle');
   final closeHandle = kernel32.lookupFunction<CloseHandleNative, CloseHandleDart>(
     'CloseHandle',
   );
@@ -70,12 +70,13 @@ import 'package:ffi/ffi.dart';
       nullptr,
     );
     if (handle == invalidHandle) return null;
-    final info = calloc<Uint8>(32);
+    // BY_HANDLE_FILE_INFORMATION (52 bytes on Win64); nNumberOfLinks @ offset 40.
+    final info = calloc<Uint8>(52);
     try {
-      final ok = getInfo(handle, 1, info.cast(), 32);
+      final ok = getInfo(handle, info.cast());
       if (ok == 0) return null;
-      final view = info.asTypedList(32).buffer.asByteData();
-      final nlink = view.getUint32(16, Endian.host);
+      final view = info.asTypedList(52).buffer.asByteData();
+      final nlink = view.getUint32(40, Endian.host);
       return (nlink: nlink, uid: 0);
     } finally {
       calloc.free(info);
@@ -121,8 +122,9 @@ typedef CreateFileWDart =
       int,
       Pointer<Void>,
     );
-typedef GetInfoNative =
-    Int32 Function(IntPtr, Int32, Pointer<Void>, Uint32);
-typedef GetInfoDart = int Function(int, int, Pointer<Void>, int);
+typedef GetFileInformationByHandleNative =
+    Int32 Function(IntPtr hFile, Pointer<Void> lpFileInformation);
+typedef GetFileInformationByHandleDart =
+    int Function(int hFile, Pointer<Void> lpFileInformation);
 typedef CloseHandleNative = Int32 Function(IntPtr);
 typedef CloseHandleDart = int Function(int);

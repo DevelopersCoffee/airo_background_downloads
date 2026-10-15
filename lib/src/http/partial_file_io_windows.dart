@@ -6,6 +6,7 @@ import 'package:ffi/ffi.dart';
 import 'partial_file_identity.dart';
 import 'partial_file_io.dart';
 import 'partial_file_stat.dart';
+import 'partial_file_writer_dart.dart';
 import 'partial_file_writer_windows.dart';
 
 base class WindowsPartialFileIo implements PartialFileIo {
@@ -154,9 +155,21 @@ base class WindowsPartialFileIo implements PartialFileIo {
     required bool append,
     PartialFileIdentity? expectedIdentity,
   }) async {
+    final inspection = inspectPath(path);
+    if (append) {
+      if (expectedIdentity != null &&
+          inspection.identity != null &&
+          !expectedIdentity.matches(inspection.identity!)) {
+        throw FileSystemException(
+          'Refusing to append: partial identity changed',
+          path,
+        );
+      }
+      return DartAppendPartialWriter.open(path, inspection);
+    }
     return WindowsPartialFileWriter.open(
       path,
-      append: append,
+      append: false,
       expectedIdentity: expectedIdentity,
     );
   }

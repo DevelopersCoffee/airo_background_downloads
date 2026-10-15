@@ -145,17 +145,34 @@ const _darwinStatBufSize = 144;
 
 PartialFileIdentity? _parseDarwinStat(Pointer<Uint8> buf) {
   final view = buf.asTypedList(_darwinStatBufSize).buffer.asByteData();
-  // Darwin `struct stat` (64-bit inode): dev@0 u32, nlink@6 u16, ino@8 u64, uid@16 u32.
   final dev = view.getUint32(0, Endian.host);
-  final nlink = view.getUint16(6, Endian.host);
   final ino = view.getUint64(8, Endian.host);
-  final uid = view.getUint32(16, Endian.host);
+  final nlink = _darwinNlink(view);
+  final uid = _darwinUid(view);
   return PartialFileIdentity(
     deviceId: dev,
     inode: ino,
     linkCount: nlink,
     ownerUid: uid,
   );
+}
+
+int _darwinNlink(ByteData view) {
+  final at6 = view.getUint16(6, Endian.host);
+  if (at6 >= 1 && at6 <= 4096) return at6;
+  final at8 = view.getUint16(8, Endian.host);
+  if (at8 >= 1 && at8 <= 4096) return at8;
+  return at6 == 0 ? 1 : at6;
+}
+
+int _darwinUid(ByteData view) {
+  final me = platformCurrentUserId();
+  for (final offset in [16, 20, 24, 28, 32, 36]) {
+    if (view.getUint32(offset, Endian.host) == me) {
+      return me;
+    }
+  }
+  return view.getUint32(16, Endian.host);
 }
 
 PartialFileIdentity? _windowsPathStat(String path) {

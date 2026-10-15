@@ -4,7 +4,6 @@ import 'dart:io';
 import 'package:airo_background_downloads/airo_background_downloads.dart';
 import 'package:airo_background_downloads/src/http/partial_file_io.dart';
 import 'package:airo_background_downloads/src/http/partial_file_io_posix.dart';
-import 'package:airo_background_downloads/src/http/partial_file_stat.dart';
 import 'package:airo_background_downloads/src/http/posix_file_read.dart';
 import 'package:airo_background_downloads/src/http/posix_syscalls.dart';
 import 'package:crypto/crypto.dart';
@@ -19,30 +18,6 @@ Future<List<int>> _readFileBytes(String path) async {
 
 Future<String> _readFileString(String path) async {
   return utf8.decode(await _readFileBytes(path));
-}
-
-Future<void> _dumpN2CancelDiagnostics(String destinationPath) async {
-  if (Platform.environment['DEBUG_N2_CANCEL'] != '1') return;
-  final partialPath = '$destinationPath.partial';
-  final metaPath = '$partialPath.meta';
-  // ignore: avoid_print
-  print('N2 debug partialPath=$partialPath');
-  // ignore: avoid_print
-  print('N2 debug lstat st_size=${platformPathFileSize(partialPath)}');
-  // ignore: avoid_print
-  print('N2 debug fstat st_size=${platformPathFileSizeFstat(partialPath)}');
-  try {
-    final metaBytes = await readRegularFileBytesPosix(metaPath);
-    final metaText = utf8.decode(metaBytes);
-    // ignore: avoid_print
-    print('N2 debug .meta contents: $metaText');
-    final map = jsonDecode(metaText) as Map<String, dynamic>;
-    // ignore: avoid_print
-    print('N2 debug resumeByteOffset=${map['resumeByteOffset']}');
-  } on Object catch (error) {
-    // ignore: avoid_print
-    print('N2 debug .meta read failed: $error');
-  }
 }
 
 void main() {
@@ -437,13 +412,6 @@ void main() {
         return;
       }
       if (requestCount == 2) {
-        if (Platform.environment['DEBUG_N2_CANCEL'] == '1') {
-          // ignore: avoid_print
-          print(
-            'N2 server req#$requestCount range=${request.headers.value(HttpHeaders.rangeHeader)} '
-            'ifRange=${request.headers.value(HttpHeaders.ifRangeHeader)}',
-          );
-        }
         expect(
           request.headers.value(HttpHeaders.rangeHeader),
           equals('bytes=60000-'),
@@ -484,7 +452,6 @@ void main() {
           event.downloadedBytes >= 60000,
     );
     await downloads.cancel('n2-interrupted');
-    await _dumpN2CancelDiagnostics(destination.path);
 
     await downloads.enqueue(
       DownloadArtifactRequest(
@@ -495,19 +462,6 @@ void main() {
         expectedSha256: sha256Hex(payload),
       ),
     );
-    if (Platform.environment['DEBUG_N2_CANCEL'] == '1') {
-      final io = PartialFileIo();
-      final partialPath = '${destination.path}.partial';
-      final metaPath = '$partialPath.meta';
-      // ignore: avoid_print
-      print(
-        'N2 debug re-enqueue partial safe=${io.inspectPath(partialPath).isSafeRegularFileOwnedByUs}',
-      );
-      // ignore: avoid_print
-      print(
-        'N2 debug re-enqueue meta safe=${io.inspectPath(metaPath).isSafeRegularFileOwnedByUs}',
-      );
-    }
 
     final terminal = await waitForTerminal(downloads, 'n2-interrupted');
     expect(terminal.status, DownloadStatus.completed);

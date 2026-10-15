@@ -4,7 +4,8 @@
 
 - **Desktop-only HTTP**: `HttpBackgroundDownloads` throws on Android/iOS; use the platform factory for mobile engines.
 - **Download size**: No implicit 8 GiB cap — set `expectedBytes` and/or `maxDownloadBytes` to bound downloads.
-- **macOS / Darwin stat**: x86_64 uses `lstat$INODE64` / `fstat$INODE64`; fixed `stat64` field offsets; fail closed on `nlink == 0`. CI includes `macos-13` (Intel) when available.
+- **macOS / Darwin stat**: 64-bit macOS uses `lstat$INODE64` / `fstat$INODE64`; fixed `stat64` field offsets; fail closed on `nlink == 0`. CI matrix includes `macos-13` (Intel) as a non-required job when GitHub runner capacity allows — **Intel macOS is not always verified in CI**.
+- **macOS resume (N2)**: Set `Range` before `If-Range`; append reopen uses `O_WRONLY` + seek; brief `0644` chmod before append on libc `0600` partials; POSIX `.meta` reads and `resumeByteOffset` persistence on cancel.
 - **Partial I/O**: POSIX fd-level opens (`O_NOFOLLOW`, `fstat` on handle) on Linux and macOS; download directories created/verified as `0700` owned by the current user.
 - **Desktop HTTP downloads**: Resume partial files with `Range: bytes=N-`, append on valid `206`/`Content-Range`, and restart cleanly when the server returns `200` or a mismatched range.
 - **Integrity**: `AiroChecksumProcessor` now streams SHA-256/SHA-1/MD5 digests via `package:crypto`; desktop finalize verifies SHA-256 on `.partial` before an atomic rename (Windows-safe replace).

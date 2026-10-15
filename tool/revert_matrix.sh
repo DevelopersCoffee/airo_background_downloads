@@ -35,6 +35,12 @@ case "$UNAME" in
   Darwin) IS_MAC=true ;;
 esac
 
+if $IS_MAC; then
+  sed_inplace() { sed -i '' "$@"; }
+else
+  sed_inplace() { sed -i "$@"; }
+fi
+
 echo "Revert matrix (host=$UNAME; each row must fail its test when guard is reverted):"
 printf '%-22s' "Row"
 echo "Revert-proof"
@@ -45,79 +51,79 @@ if ! $IS_LINUX && ! $IS_MAC; then
 fi
 
 # 1) nlink (path)
-sed -i 's/linkCount == 1/linkCount != null/' lib/src/http/partial_file_io.dart
+sed_inplace 's/linkCount == 1/linkCount != null/' lib/src/http/partial_file_io.dart
 printf '%-22s' "K1/nlink"
 expect_fail "nlink" lib/src/http/partial_file_io.dart \
   test/k2_security_regressions_test.dart "K2 nlink>1 partial is not safe"
 
 # 2) owner (path)
-sed -i 's/ownedByUs &&/true \&\&/' lib/src/http/partial_file_io.dart
+sed_inplace 's/ownedByUs &&/true \&\&/' lib/src/http/partial_file_io.dart
 printf '%-22s' "owner"
 expect_fail "owner" lib/src/http/partial_file_io.dart \
   test/k2_security_regressions_test.dart "K2 foreign owner partial is not safe"
 
 # 3) dir fsync result
-sed -i 's/if (result != 0)/if (false)/' lib/src/http/partial_file_io_posix.dart
+sed_inplace 's/if (result != 0)/if (false)/' lib/src/http/partial_file_io_posix.dart
 printf '%-22s' "dir fsync"
 expect_fail "dir fsync" lib/src/http/partial_file_io_posix.dart \
   test/posix_syscalls_revert_test.dart "K2 injected fsync -1 fails closed"
 
 # 4) dir open failure
-sed -i 's/if (fd < 0)/if (false)/' lib/src/http/partial_file_io_posix.dart
+sed_inplace 's/if (fd < 0)/if (false)/' lib/src/http/partial_file_io_posix.dart
 printf '%-22s' "dir open"
 expect_fail "dir open" lib/src/http/partial_file_io_posix.dart \
   test/posix_syscalls_revert_test.dart "K2 injected open -1 fails closed"
 
 # 5) size cap
-sed -i 's/if (nextTotalBytes > cap)/if (false)/' lib/src/http_background_downloads.dart
+sed_inplace 's/if (nextTotalBytes > cap)/if (false)/' lib/src/http_background_downloads.dart
 printf '%-22s' "size cap"
 expect_fail "size cap" lib/src/http_background_downloads.dart \
   test/k2_security_regressions_test.dart "K2 download size cap rejects oversized body"
 
 # 6) meta identity
-sed -i 's/if (record.source != request.source.toString()) return false;/if (false) return false;/' \
+sed_inplace 's/if (record.source != request.source.toString()) return false;/if (false) return false;/' \
   lib/src/http/resume_validator_store.dart
 printf '%-22s' "meta"
 expect_fail "meta" lib/src/http/resume_validator_store.dart \
   test/k2_security_regressions_test.dart "K2 mismatched meta identity blocks resume validator reuse"
 
 # 7) exclusive O_NOFOLLOW (Linux + Darwin patterns)
-sed -i 's/return _linuxOWronly | _linuxOCreat | _linuxOExcl | _linuxONoFollow;/return _linuxOWronly | _linuxOCreat;/' \
+sed_inplace 's/return _linuxOWronly | _linuxOCreat | _linuxOExcl | _linuxONoFollow;/return _linuxOWronly | _linuxOCreat;/' \
   lib/src/http/partial_file_writer_posix.dart
-sed -i 's/return _darwinORdwr | _darwinOCreat | _darwinOExcl | _darwinONoFollow;/return _darwinORdwr | _darwinOCreat;/' \
+sed_inplace 's/return _darwinORdwr | _darwinOCreat | _darwinOExcl | _darwinONoFollow;/return _darwinORdwr | _darwinOCreat;/' \
   lib/src/http/partial_file_writer_posix.dart
 printf '%-22s' "exclusive"
 expect_fail "exclusive" lib/src/http/partial_file_writer_posix.dart \
   test/k2_security_regressions_test.dart "K2 O_NOFOLLOW exclusive open refuses symlink partial target"
 
 # 8) pre-commit symlink
-sed -i '69s/if (!inspection.isSafeRegularFileOwnedByUs)/if (false)/' \
+sed_inplace '69s/if (!inspection.isSafeRegularFileOwnedByUs)/if (false)/' \
   lib/src/http/partial_path_guard.dart
 printf '%-22s' "pre-commit"
 expect_fail "pre-commit" lib/src/http/partial_path_guard.dart \
   test/k2_security_regressions_test.dart "K2 pre-commit refuses symlink partial"
 
 # 9) connect timeout
-sed -i 's/client.connectionTimeout = _connectionTimeout;/client.connectionTimeout = null;/' \
+sed_inplace 's/client.connectionTimeout = _connectionTimeout;/client.connectionTimeout = null;/' \
   lib/src/http_background_downloads.dart
 printf '%-22s' "connect timeout"
 expect_fail "connect timeout" lib/src/http_background_downloads.dart \
   test/k2_security_regressions_test.dart "K2 connection timeout fails unreachable host quickly"
 
 # 10) fd-level nlink (independent of path guard)
-sed -i 's/if (stat.linkCount != 1)/if (false)/' lib/src/http/partial_file_writer_posix.dart
+sed_inplace 's/if (stat.linkCount != 1)/if (false)/' lib/src/http/partial_file_writer_posix.dart
 printf '%-22s' "fd nlink"
 expect_fail "fd nlink" lib/src/http/partial_file_writer_posix.dart \
   test/partial_file_writer_fd_guard_test.dart "fd-level nlink check rejects hardlinked inode"
 
 # 11) fd-level owner
-sed -i 's/if (stat.ownerUid != currentUid)/if (false)/' lib/src/http/partial_file_writer_posix.dart
+sed_inplace 's/if (stat.ownerUid != currentUid)/if (false)/' lib/src/http/partial_file_writer_posix.dart
 printf '%-22s' "fd owner"
 expect_fail "fd owner" lib/src/http/partial_file_writer_posix.dart \
   test/partial_file_writer_fd_guard_test.dart "fd-level owner check rejects foreign uid"
 
 # 12) fd-level identity
-sed -i 's/if (expectedIdentity != null && !expectedIdentity.matches(stat))/if (false)/' \
+sed_inplace 's/if (expectedIdentity != null && !expectedIdentity.matches(stat))/if (false)/' \
   lib/src/http/partial_file_writer_posix.dart
 printf '%-22s' "fd identity"
 expect_fail "fd identity" lib/src/http/partial_file_writer_posix.dart \
@@ -169,7 +175,7 @@ for label, old, new in (
     text = text.replace(old, new, 1)
 p.write_text(text)
 PY
-sed -i 's/if (stat.linkCount != 1)/if (false)/' lib/src/http/partial_file_writer_posix.dart
+sed_inplace 's/if (stat.linkCount != 1)/if (false)/' lib/src/http/partial_file_writer_posix.dart
 printf '%-22s' "openVerified (K1)"
 if run_test test/http_background_downloads_blockers_test.dart "K1 hardlinked partial with validator"; then
   git checkout -- lib/src/http/partial_path_guard.dart lib/src/http/partial_file_writer_posix.dart

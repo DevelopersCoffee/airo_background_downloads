@@ -21,7 +21,7 @@ When using `HttpBackgroundDownloads`, there is **no default byte cap** on respon
 
 ### macOS coverage
 
-CI runs on **macOS arm64** (`macos-latest`) and **Intel macOS** (`macos-13`) when that runner is available. Darwin `stat` parsing uses `lstat$INODE64` / `fstat$INODE64` on x86_64 and plain `lstat` / `fstat` on arm64.
+CI runs on **macOS arm64** (`macos-latest`) and **Intel macOS** (`macos-13`) in the matrix. Intel runners are often capacity-limited; the `macos-13` job is **non-blocking** (`continue-on-error`), so **Intel macOS is not always verified in CI**. Darwin `stat` parsing prefers `lstat$INODE64` / `fstat$INODE64` on all 64-bit macOS targets.
 
 ---
 

@@ -315,12 +315,7 @@ void main() {
           ..statusCode = HttpStatus.ok
           ..contentLength = totalSize
           ..add(payload.sublist(0, 60000));
-        try {
-          await Future<void>.delayed(const Duration(hours: 1));
-        } on Object {
-          // Client closed the connection after cancel.
-        }
-        await request.response.close();
+        await request.response.flush();
         return;
       }
       expect(

@@ -91,7 +91,7 @@ expect_fail "exclusive" lib/src/http/partial_file_writer_posix.dart \
   test/k2_security_regressions_test.dart "K2 O_NOFOLLOW exclusive open refuses symlink partial target"
 
 # 8) pre-commit symlink
-sed -i '58s/if (!inspection.isSafeRegularFileOwnedByUs)/if (false)/' \
+sed -i '59s/if (!inspection.isSafeRegularFileOwnedByUs)/if (false)/' \
   lib/src/http/partial_path_guard.dart
 printf '%-22s' "pre-commit"
 expect_fail "pre-commit" lib/src/http/partial_path_guard.dart \
@@ -148,8 +148,9 @@ bytes_old = """  int reusablePartialBytes(String partialPath) {
       return 0;
     }
     final size = platformPathFileSize(partialPath);
-    if (size == null) {
-      _io.unlinkPartialEntry(partialPath);
+    if (size == null || size < 0) {
+      // Keep the partial when lstat size is unavailable (macOS libc 0600);
+      // resume byte count may still come from `.meta`.
       return 0;
     }
     return size;

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'partial_file_io.dart';
+import 'partial_file_stat.dart';
 
 /// Sanitizes download temp paths without following symlinks.
 class PartialPathGuard {
@@ -38,7 +39,12 @@ class PartialPathGuard {
       }
       return 0;
     }
-    return File(partialPath).lengthSync();
+    final size = platformPathFileSize(partialPath);
+    if (size == null) {
+      _io.unlinkPartialEntry(partialPath);
+      return 0;
+    }
+    return size;
   }
 
   Future<void> createExclusiveEmptyFile(String path) async {

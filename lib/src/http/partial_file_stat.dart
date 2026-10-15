@@ -134,6 +134,13 @@ PartialFileIdentity? _parseLinuxStat(Pointer<Uint8> buf) {
   );
 }
 
+int? _linuxStatSize(Pointer<Uint8> buf) {
+  final view = buf.asTypedList(_linuxStatBufSize).buffer.asByteData();
+  return _isLinuxArm64
+      ? view.getInt64(32, Endian.host)
+      : view.getInt64(48, Endian.host);
+}
+
 PartialFileIdentity? _darwinLstat(String path) {
   final lib = DynamicLibrary.open('libSystem.dylib');
   final lstatFn = _lookupDarwinLstat(lib);
@@ -242,6 +249,47 @@ PartialFileIdentity? _parseDarwinStat(Pointer<Uint8> buf) {
     linkCount: nlink,
     ownerUid: uid,
   );
+}
+
+int? _darwinStatSize(Pointer<Uint8> buf) {
+  final view = buf.asTypedList(_darwinStatBufSize).buffer.asByteData();
+  return view.getInt64(96, Endian.host);
+}
+
+/// File size from lstat (no follow), or null when stat fails.
+int? platformPathFileSize(String path) {
+  if (Platform.isLinux) {
+    final lib = DynamicLibrary.open('libc.so.6');
+    final lstatFn = _lookupLinuxLstat(lib);
+    if (lstatFn == null) return null;
+    final pathPtr = path.toNativeUtf8();
+    final buf = calloc<Uint8>(_linuxStatBufSize);
+    try {
+      if (lstatFn(pathPtr, buf.cast()) != 0) return null;
+      return _linuxStatSize(buf);
+    } finally {
+      calloc.free(buf);
+      malloc.free(pathPtr);
+    }
+  }
+  if (Platform.isMacOS) {
+    final lib = DynamicLibrary.open('libSystem.dylib');
+    final lstatFn = _lookupDarwinLstat(lib);
+    if (lstatFn == null) return null;
+    final pathPtr = path.toNativeUtf8();
+    final buf = calloc<Uint8>(_darwinStatBufSize);
+    try {
+      if (lstatFn(pathPtr, buf.cast()) != 0) return null;
+      return _darwinStatSize(buf);
+    } finally {
+      calloc.free(buf);
+      malloc.free(pathPtr);
+    }
+  }
+  if (Platform.isWindows) {
+    return File(path).lengthSync();
+  }
+  return null;
 }
 
 PartialFileIdentity? _windowsPathStat(String path) {

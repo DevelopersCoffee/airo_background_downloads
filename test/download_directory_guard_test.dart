@@ -59,9 +59,13 @@ void main() {
   test('system temp destination uses private .airo_partials leaf', () {
     if (!Platform.isLinux && !Platform.isMacOS) return;
     final destination = '${Directory.systemTemp.path}/airo-dl-e3-${DateTime.now().microsecondsSinceEpoch}.bin';
-    ensurePrivatePartialStorage(destination);
     final storage = PartialStoragePaths.forDestination(destination).storageDirectory;
-    expect(Directory(storage).existsSync(), isTrue);
+    final storageDir = Directory(storage);
+    if (storageDir.existsSync()) {
+      storageDir.deleteSync(recursive: true);
+    }
+    ensurePrivatePartialStorage(destination);
+    expect(storageDir.existsSync(), isTrue);
     final mode = platformPathMode(storage)! & 0x1FF;
     expect(mode & 63, equals(0));
   });

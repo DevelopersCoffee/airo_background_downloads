@@ -7,13 +7,20 @@ import 'partial_file_io.dart';
 import 'partial_file_stat.dart';
 
 class PosixPartialFileWriter implements PartialFileWriter {
-  PosixPartialFileWriter._(this._fd, this.identity, this._close, this._write);
+  PosixPartialFileWriter._(
+    this._fd,
+    this.identity,
+    this._close,
+    this._write,
+    this._fsync,
+  );
 
   final int _fd;
   @override
   final PartialFileIdentity identity;
   final CloseDart _close;
   final WriteDart _write;
+  final FsyncDart _fsync;
 
   @override
   void writeBytes(List<int> bytes) {
@@ -37,6 +44,9 @@ class PosixPartialFileWriter implements PartialFileWriter {
 
   @override
   Future<void> close() async {
+    if (_fsync(_fd) != 0) {
+      throw FileSystemException('fsync failed for partial fd');
+    }
     final result = _close(_fd);
     if (result != 0) {
       throw FileSystemException('close failed for partial fd');
@@ -56,6 +66,7 @@ class PosixPartialFileWriter implements PartialFileWriter {
     final openFn = lib.lookupFunction<OpenNative, OpenDart>('open');
     final closeFn = lib.lookupFunction<CloseNative, CloseDart>('close');
     final writeFn = lib.lookupFunction<WriteNative, WriteDart>('write');
+    final fsyncFn = lib.lookupFunction<FsyncNative, FsyncDart>('fsync');
 
     final flags = append
         ? _openFlagsAppend()
@@ -93,7 +104,7 @@ class PosixPartialFileWriter implements PartialFileWriter {
             path,
           );
         }
-        return PosixPartialFileWriter._(fd, stat, closeFn, writeFn);
+        return PosixPartialFileWriter._(fd, stat, closeFn, writeFn, fsyncFn);
       } on Object {
         closeFn(fd);
         rethrow;
@@ -140,3 +151,5 @@ typedef CloseDart = int Function(int);
 typedef WriteNative =
     IntPtr Function(Int32 fd, Pointer<Void> buf, IntPtr count);
 typedef WriteDart = int Function(int fd, Pointer<Void> buf, int count);
+typedef FsyncNative = Int32 Function(Int32);
+typedef FsyncDart = int Function(int);

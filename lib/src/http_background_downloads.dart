@@ -8,7 +8,9 @@ import 'download_models.dart';
 import 'http/partial_file_identity.dart';
 import 'http/partial_file_io.dart';
 import 'http/download_directory_guard.dart';
+import 'http/partial_storage_cleanup.dart';
 import 'http/partial_storage_paths.dart';
+import 'http/posix_variadic.dart';
 import 'http/partial_path_guard.dart';
 import 'http/resume_policy.dart';
 import 'http/resume_validator_store.dart';
@@ -223,6 +225,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       }
 
       await _commitPartialFile(partial, destination, validatorStore);
+      tryRemoveEmptyPartialStorageDirectory(destination.path);
 
       job.status = DownloadStatus.completed;
       job.downloadedBytes = destination.lengthSync();
@@ -324,16 +327,9 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         continue;
       }
 
-      var parsedRange = parseContentRangeHeader(
+      final parsedRange = parseContentRangeHeader(
         response.headers.value(HttpHeaders.contentRangeHeader),
       );
-      if (parsedRange == null && Platform.isMacOS) {
-        parsedRange = _syntheticContentRangeFor206(
-          response: response,
-          resumeOffset: resumeOffset,
-          expectedBytes: job.request.expectedBytes,
-        );
-      }
 
       var append =
           maySendRange &&
@@ -349,24 +345,6 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
               parsedRange,
             ),
           );
-
-      if (!append &&
-          Platform.isMacOS &&
-          maySendRange &&
-          resumeOffset > 0 &&
-          response.statusCode == HttpStatus.ok &&
-          job.request.expectedBytes != null) {
-        final tailBytes = job.request.expectedBytes! - resumeOffset;
-        final responseLen = _normalizedContentLength(response);
-        if (tailBytes > 0 && responseLen == tailBytes) {
-          parsedRange = ContentRangeSpec(
-            start: resumeOffset,
-            end: job.request.expectedBytes! - 1,
-            total: job.request.expectedBytes,
-          );
-          append = true;
-        }
-      }
 
       if (resumeOffset > 0 && !append) {
         if (response.statusCode == HttpStatus.ok) {
@@ -565,32 +543,6 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     return _normalizedContentLength(response);
   }
 
-  ContentRangeSpec? _syntheticContentRangeFor206({
-    required HttpClientResponse response,
-    required int resumeOffset,
-    required int? expectedBytes,
-  }) {
-    if (response.statusCode != HttpStatus.partialContent) return null;
-    if (resumeOffset <= 0 || expectedBytes == null) return null;
-    final total = expectedBytes;
-    final len = _normalizedContentLength(response);
-    if (len != null && len > 0) {
-      final segmentLen = len == total ? total - resumeOffset : len;
-      if (segmentLen > 0 && resumeOffset + segmentLen == total) {
-        return ContentRangeSpec(
-          start: resumeOffset,
-          end: total - 1,
-          total: total,
-        );
-      }
-    }
-    return ContentRangeSpec(
-      start: resumeOffset,
-      end: total - 1,
-      total: total,
-    );
-  }
-
   void _recordResumeCapability(_HttpDownloadJob job, HttpClientResponse response) {
     final acceptRanges = response.headers.value(HttpHeaders.acceptRangesHeader);
     final advertises =
@@ -628,6 +580,9 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     _pathGuard.requireSafeRegularPartialBeforeCommit(partial.path);
     _partialFileIo.prepareDestinationForCommit(destination.path);
     await _partialFileIo.syncFile(partial.path);
+    if (Platform.isLinux || Platform.isMacOS) {
+      posixFchmodAndSyncBeforeRename(partial.path);
+    }
     await _partialFileIo.syncDirectory(destination.parent.path);
     await partial.rename(destination.path);
     await _partialFileIo.syncDirectory(destination.parent.path);

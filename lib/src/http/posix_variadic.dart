@@ -52,3 +52,82 @@ int posixMkdir(String path, int mode) {
     malloc.free(pathPtr);
   }
 }
+
+/// Darwin `fcntl(F_FULLFSYNC)` — flush buffers and force on-storage durability.
+const darwinFullFsyncCmd = 51;
+
+int posixDarwinFullFsync(int fd) => posixFcntl(fd, darwinFullFsyncCmd);
+
+int posixFchmod(int fd, int mode) {
+  final fchmodFn = posixLib().lookupFunction<
+      Int32 Function(Int32, Int32),
+      int Function(int, int)>('fchmod');
+  return fchmodFn(fd, mode);
+}
+
+int _openReadOnlyNoFollow(String path) {
+  const linuxORdonly = 0;
+  const linuxONoFollow = 0x8000;
+  const darwinORdonly = 0;
+  const darwinONoFollow = 0x0100;
+  final flags = Platform.isLinux
+      ? linuxORdonly | linuxONoFollow
+      : darwinORdonly | darwinONoFollow;
+  return posixOpen(path, flags);
+}
+
+void _syncOpenFd(int fd, String path) {
+  if (Platform.isMacOS) {
+    if (posixDarwinFullFsync(fd) != 0) {
+      throw FileSystemException('F_FULLFSYNC failed', path);
+    }
+    return;
+  }
+  final fsyncFn = posixLib().lookupFunction<
+      Int32 Function(Int32),
+      int Function(int)>('fsync');
+  if (fsyncFn(fd) != 0) {
+    throw FileSystemException('fsync failed', path);
+  }
+}
+
+/// macOS [PartialFileIo.syncFile]: `open(O_RDONLY|O_NOFOLLOW)` + `F_FULLFSYNC`.
+void posixSyncRegularFileViaFd(String path) {
+  if (!Platform.isLinux && !Platform.isMacOS) {
+    return;
+  }
+  final fd = _openReadOnlyNoFollow(path);
+  if (fd < 0) {
+    throw FileSystemException('Cannot open file for sync', path);
+  }
+  final closeFn = posixLib().lookupFunction<
+      Int32 Function(Int32),
+      int Function(int)>('close');
+  try {
+    _syncOpenFd(fd, path);
+  } finally {
+    closeFn(fd);
+  }
+}
+
+/// Before rename: `fchmod(0644)` on the fd, then fsync / F_FULLFSYNC.
+void posixFchmodAndSyncBeforeRename(String path, {int mode = 420}) {
+  if (!Platform.isLinux && !Platform.isMacOS) {
+    return;
+  }
+  final fd = _openReadOnlyNoFollow(path);
+  if (fd < 0) {
+    throw FileSystemException('Cannot open partial for fchmod before rename', path);
+  }
+  final closeFn = posixLib().lookupFunction<
+      Int32 Function(Int32),
+      int Function(int)>('close');
+  try {
+    if (posixFchmod(fd, mode) != 0) {
+      throw FileSystemException('fchmod failed before rename', path);
+    }
+    _syncOpenFd(fd, path);
+  } finally {
+    closeFn(fd);
+  }
+}

@@ -7,6 +7,7 @@ import 'partial_file_io.dart';
 import 'partial_file_stat.dart';
 import 'partial_file_writer_posix.dart';
 import 'posix_syscalls.dart';
+import 'posix_variadic.dart';
 
 /// POSIX desktop partial file safety (Linux + macOS).
 base class PosixPartialFileIo implements PartialFileIo {
@@ -114,7 +115,7 @@ base class PosixPartialFileIo implements PartialFileIo {
       throw FileSystemException('Cannot fsync missing file', path);
     }
     if (Platform.isMacOS) {
-      // Durability is handled by fsync on the partial fd in PosixPartialFileWriter.close().
+      posixSyncRegularFileViaFd(path);
       return;
     }
     final raf = await File(path).open(mode: FileMode.read);

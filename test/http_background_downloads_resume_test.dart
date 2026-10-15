@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:airo_background_downloads/airo_background_downloads.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -73,6 +74,8 @@ void main() {
     );
   }
 
+  String sha256Hex(List<int> bytes) => sha256.convert(bytes).toString();
+
   test('wrong hash fails and does not replace destination', () async {
     final payload = utf8.encode('destination-should-survive');
     final wrongHash = '0' * 64;
@@ -102,7 +105,7 @@ void main() {
     expect(terminal.status, DownloadStatus.failed);
     expect(terminal.failure?.code, DownloadFailureCode.integrityMismatch);
     expect(await destination.readAsString(), equals('original-bytes'));
-    expect(File('${destination.path}.partial').existsSync(), isTrue);
+    expect(File('${destination.path}.partial').existsSync(), isFalse);
   });
 
   test(
@@ -116,12 +119,10 @@ void main() {
       var requestCount = 0;
       final url = await bindServer((request) async {
         requestCount += 1;
-        if (requestCount == 1) {
-          expect(
-            request.headers.value(HttpHeaders.rangeHeader),
-            equals('bytes=5-'),
-          );
-        }
+        expect(
+          request.headers.value(HttpHeaders.rangeHeader),
+          equals('bytes=5-'),
+        );
         request.response
           ..statusCode = HttpStatus.ok
           ..contentLength = payload.length
@@ -136,6 +137,7 @@ void main() {
           source: url,
           destinationPath: destination.path,
           expectedBytes: payload.length,
+          expectedSha256: sha256Hex(payload),
         ),
       );
 
@@ -182,6 +184,7 @@ void main() {
         source: url,
         destinationPath: destination.path,
         expectedBytes: payload.length,
+        expectedSha256: sha256Hex(payload),
       ),
     );
 
@@ -225,10 +228,58 @@ void main() {
         source: url,
         destinationPath: destination.path,
         expectedBytes: payload.length,
+        expectedSha256: sha256Hex(payload),
       ),
     );
 
     final terminal = await waitForTerminal(downloads, 'resume-206');
+    expect(terminal.status, DownloadStatus.completed);
+    expect(await destination.readAsBytes(), equals(payload));
+  });
+
+  test('If-Range validator captured from first response enables resume', () async {
+    final payload = utf8.encode('if-range-resume-validator-test-bytes');
+    final destination = File('${tempDir.path}/etag.bin');
+
+    final url = await bindServer((request) async {
+      expect(
+        request.headers.value(HttpHeaders.ifRangeHeader),
+        equals('"v1"'),
+      );
+      expect(
+        request.headers.value(HttpHeaders.rangeHeader),
+        equals('bytes=8-'),
+      );
+      request.response
+        ..statusCode = HttpStatus.partialContent
+        ..headers.set(HttpHeaders.etagHeader, '"v1"')
+        ..headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes 8-${payload.length - 1}/${payload.length}',
+        )
+        ..contentLength = payload.length - 8
+        ..add(payload.sublist(8))
+        ..close();
+    });
+
+    final partial = File('${destination.path}.partial');
+    final meta = File('${partial.path}.meta');
+    await partial.writeAsBytes(payload.sublist(0, 8));
+    await meta.writeAsString(
+      '{"source":"$url","expectedBytes":${payload.length},"etag":"\\"v1\\""}',
+    );
+
+    final downloads = HttpBackgroundDownloads(clientFactory: testClient);
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'if-range-resume',
+        source: url,
+        destinationPath: destination.path,
+        expectedBytes: payload.length,
+      ),
+    );
+
+    final terminal = await waitForTerminal(downloads, 'if-range-resume');
     expect(terminal.status, DownloadStatus.completed);
     expect(await destination.readAsBytes(), equals(payload));
   });

@@ -13,6 +13,15 @@ Progressive background-downloader contracts for Flutter apps with WorkManager re
 - **Progressive Background Download**: Pause, resume, and track progress across app restarts.
 - **Integrity Verification**: Built-in sha256/md5 integrity verification.
 - **Native Android & iOS Engines**: WorkManager worker on Android and URLSession background task on iOS.
+- **Desktop HTTP engine** (Linux, macOS, Windows): `HttpBackgroundDownloads` with partial-file safety and resume. **Not** for direct use on Android/iOS — use `BackgroundDownloads.platform()` instead.
+
+### Desktop download limits
+
+When using `HttpBackgroundDownloads`, there is **no default byte cap** on response bodies. Set `DownloadArtifactRequest.expectedBytes` and/or pass `maxDownloadBytes` to bound size; otherwise downloads are limited only by disk and server behavior.
+
+### macOS coverage
+
+CI runs on **macOS arm64** (`macos-latest`) and **Intel macOS** (`macos-13`) when that runner is available. Darwin `stat` parsing uses `lstat$INODE64` / `fstat$INODE64` on x86_64 and plain `lstat` / `fstat` on arm64.
 
 ---
 

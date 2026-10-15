@@ -436,6 +436,13 @@ void main() {
         await request.response.flush();
         return;
       }
+      if (Platform.environment['DEBUG_N2_CANCEL'] == '1') {
+        // ignore: avoid_print
+        print(
+          'N2 server req#$requestCount range=${request.headers.value(HttpHeaders.rangeHeader)} '
+          'ifRange=${request.headers.value(HttpHeaders.ifRangeHeader)}',
+        );
+      }
       expect(
         request.headers.value(HttpHeaders.rangeHeader),
         equals('bytes=60000-'),

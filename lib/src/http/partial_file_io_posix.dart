@@ -171,8 +171,8 @@ base class PosixPartialFileIo implements PartialFileIo {
     PartialFileIdentity? expectedIdentity,
   }) async {
     if (Platform.isMacOS) {
-      final inspection = inspectPath(path);
       if (append) {
+        final inspection = inspectPath(path);
         if (expectedIdentity != null &&
             inspection.identity != null &&
             !expectedIdentity.matches(inspection.identity!)) {
@@ -183,7 +183,13 @@ base class PosixPartialFileIo implements PartialFileIo {
         }
         return DartAppendPartialWriter.open(path, inspection);
       }
-      return DartCreatePartialWriter.createEmpty(this, path);
+      unlinkPartialEntry(path);
+      return PosixPartialFileWriter.open(
+        path,
+        append: false,
+        currentUid: _uid,
+        expectedIdentity: expectedIdentity,
+      );
     }
     return PosixPartialFileWriter.open(
       path,

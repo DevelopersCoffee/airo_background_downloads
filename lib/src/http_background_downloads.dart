@@ -424,6 +424,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         throw HttpException('HTTP idle read timeout');
       } on Object {
         await closeWriter();
+        if (job.cancelRequested) {
+          await _partialFileIo.syncFile(partial.path);
+          return;
+        }
         rethrow;
       }
 
@@ -522,6 +526,9 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     await _partialFileIo.syncFile(partial.path);
     await _partialFileIo.syncDirectory(destination.parent.path);
     await partial.rename(destination.path);
+    if (Platform.isMacOS) {
+      posixChmodPath(destination.path, 420); // 0644 under private download dirs
+    }
     await _partialFileIo.syncDirectory(destination.parent.path);
     validatorStore.deleteSync();
     _partialFileIo.unlinkPartialEntry('${partial.path}.work');

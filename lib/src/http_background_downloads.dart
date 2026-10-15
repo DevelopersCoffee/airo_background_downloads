@@ -355,7 +355,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
             range: parsedRange,
             resumeOffset: resumeOffset,
             expectedBytes: job.request.expectedBytes,
-            responseContentLength: _normalizedContentLength(response),
+            responseContentLength: _expectedResponseBodyBytes(
+              response,
+              parsedRange,
+            ),
           );
 
       if (resumeOffset > 0 && !append) {
@@ -475,7 +478,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       }
       await closeWriter();
 
-      final declaredLength = _normalizedContentLength(response);
+      final declaredLength = _expectedResponseBodyBytes(response, parsedRange);
       if (declaredLength != null && bytesReceived != declaredLength) {
         if (bytesReceived > 0) {
           await validatorStore.persistResumeByteOffset(
@@ -495,7 +498,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
             range: parsedRange,
             resumeOffset: resumeOffset,
             expectedBytes: job.request.expectedBytes,
-            responseContentLength: _normalizedContentLength(response),
+            responseContentLength: _expectedResponseBodyBytes(
+              response,
+              parsedRange,
+            ),
             bytesReceived: bytesReceived,
           )) {
         _partialFileIo.unlinkPartialEntry(partial.path);
@@ -539,6 +545,18 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     final length = response.contentLength;
     if (length < 0) return null;
     return length;
+  }
+
+  /// Bytes expected for this response body (206 uses Content-Range segment).
+  int? _expectedResponseBodyBytes(
+    HttpClientResponse response,
+    ContentRangeSpec? parsedRange,
+  ) {
+    if (response.statusCode == HttpStatus.partialContent &&
+        parsedRange != null) {
+      return parsedRange.segmentLength;
+    }
+    return _normalizedContentLength(response);
   }
 
   void _recordResumeCapability(_HttpDownloadJob job, HttpClientResponse response) {

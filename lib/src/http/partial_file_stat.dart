@@ -44,27 +44,38 @@ int platformCurrentUserId() {
 bool get _isLinuxArm64 =>
     Platform.isLinux && Abi.current() == Abi.linuxArm64;
 
-bool get _isDarwinX64 =>
-    Platform.isMacOS && Abi.current() == Abi.macosX64;
-
 typedef _StatPathNative = Int32 Function(Pointer<Utf8>, Pointer<Void>);
 typedef _StatPathDart = int Function(Pointer<Utf8>, Pointer<Void>);
 typedef _StatFdNative = Int32 Function(Int32, Pointer<Void>);
 typedef _StatFdDart = int Function(int, Pointer<Void>);
 
 _StatPathDart? _lookupDarwinLstat(DynamicLibrary lib) {
-  final name = _isDarwinX64 ? 'lstat\$INODE64' : 'lstat';
+  if (Platform.isMacOS) {
+    try {
+      return lib.lookupFunction<_StatPathNative, _StatPathDart>(
+        'lstat\$INODE64',
+      );
+    } on Object {
+      // Fall back below.
+    }
+  }
   try {
-    return lib.lookupFunction<_StatPathNative, _StatPathDart>(name);
+    return lib.lookupFunction<_StatPathNative, _StatPathDart>('lstat');
   } on Object {
     return null;
   }
 }
 
 _StatFdDart? _lookupDarwinFstat(DynamicLibrary lib) {
-  final name = _isDarwinX64 ? 'fstat\$INODE64' : 'fstat';
+  if (Platform.isMacOS) {
+    try {
+      return lib.lookupFunction<_StatFdNative, _StatFdDart>('fstat\$INODE64');
+    } on Object {
+      // Fall back below.
+    }
+  }
   try {
-    return lib.lookupFunction<_StatFdNative, _StatFdDart>(name);
+    return lib.lookupFunction<_StatFdNative, _StatFdDart>('fstat');
   } on Object {
     return null;
   }

@@ -484,6 +484,19 @@ void main() {
         expectedSha256: sha256Hex(payload),
       ),
     );
+    if (Platform.environment['DEBUG_N2_CANCEL'] == '1') {
+      final io = PartialFileIo();
+      final partialPath = '${destination.path}.partial';
+      final metaPath = '$partialPath.meta';
+      // ignore: avoid_print
+      print(
+        'N2 debug re-enqueue partial safe=${io.inspectPath(partialPath).isSafeRegularFileOwnedByUs}',
+      );
+      // ignore: avoid_print
+      print(
+        'N2 debug re-enqueue meta safe=${io.inspectPath(metaPath).isSafeRegularFileOwnedByUs}',
+      );
+    }
 
     final terminal = await waitForTerminal(downloads, 'n2-interrupted');
     expect(terminal.status, DownloadStatus.completed);

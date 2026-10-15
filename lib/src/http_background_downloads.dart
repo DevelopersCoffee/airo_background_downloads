@@ -298,8 +298,9 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         outgoing.headers.set(entry.key, entry.value);
       }
       if (maySendRange) {
-        await applyIfRangeFromStore(outgoing, validatorStore, job.request);
         outgoing.headers.set(HttpHeaders.rangeHeader, 'bytes=$resumeOffset-');
+        await applyIfRangeFromStore(outgoing, validatorStore, job.request);
+        outgoing.headers.set(HttpHeaders.connectionHeader, 'close');
       }
       assert(() {
         if (Platform.environment['DEBUG_N2_CANCEL'] == '1') {
@@ -476,6 +477,13 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
 
       final declaredLength = _normalizedContentLength(response);
       if (declaredLength != null && bytesReceived != declaredLength) {
+        if (bytesReceived > 0) {
+          await validatorStore.persistResumeByteOffset(
+            resumeOffset + bytesReceived,
+            request: job.request,
+          );
+          await _partialFileIo.syncFile(partial.path);
+        }
         throw HttpException(
           'Incomplete HTTP body ($bytesReceived/$declaredLength bytes)',
         );

@@ -72,8 +72,10 @@ class PosixPartialFileWriter implements PartialFileWriter {
 
   @override
   Future<void> close() async {
-    if (_fsync(_fd) != 0) {
-      throw FileSystemException('fsync failed for partial fd');
+    if (Platform.isLinux) {
+      if (_fsync(_fd) != 0) {
+        throw FileSystemException('fsync failed for partial fd');
+      }
     }
     final result = _close(_fd);
     if (result != 0) {
@@ -147,14 +149,15 @@ int _openFlagsAppend() {
   if (Platform.isLinux) {
     return _linuxOWronly | _linuxOAppend | _linuxONoFollow;
   }
-  return _darwinOWronly | _darwinOAppend | _darwinONoFollow;
+  // macOS: O_RDWR so SHA-256 can read back from the open fd before close.
+  return _darwinORdwr | _darwinOAppend | _darwinONoFollow;
 }
 
 int _openFlagsCreateExclusive() {
   if (Platform.isLinux) {
     return _linuxOWronly | _linuxOCreat | _linuxOExcl | _linuxONoFollow;
   }
-  return _darwinOWronly | _darwinOCreat | _darwinOExcl | _darwinONoFollow;
+  return _darwinORdwr | _darwinOCreat | _darwinOExcl | _darwinONoFollow;
 }
 
 // Linux fcntl.h
@@ -165,7 +168,7 @@ const _linuxOAppend = 1024;
 const _linuxONoFollow = 0x8000; // 0100000 octal
 
 // Darwin fcntl.h
-const _darwinOWronly = 0x0001;
+const _darwinORdwr = 0x0002;
 const _darwinOCreat = 0x0200;
 const _darwinOExcl = 0x0800;
 const _darwinOAppend = 0x0008;

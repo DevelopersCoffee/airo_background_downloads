@@ -113,22 +113,6 @@ base class PosixPartialFileIo implements PartialFileIo {
     if (!File(path).existsSync()) {
       throw FileSystemException('Cannot fsync missing file', path);
     }
-    if (Platform.isMacOS) {
-      final fd = _syscalls.openDirectory(path, _darwinSyncOpenFlags);
-      if (fd < 0) {
-        throw FileSystemException('Cannot open file for fsync', path);
-      }
-      try {
-        if (_syscalls.fsync(fd) != 0) {
-          throw FileSystemException('fsync failed for file', path);
-        }
-      } finally {
-        if (_syscalls.close(fd) != 0) {
-          throw FileSystemException('close failed for file fsync fd', path);
-        }
-      }
-      return;
-    }
     final raf = await File(path).open(mode: FileMode.read);
     try {
       await raf.flush();
@@ -180,4 +164,3 @@ base class PosixPartialFileIo implements PartialFileIo {
 
 const _oRdonly = 0;
 const _oDirectory = 0x00010000;
-const _darwinSyncOpenFlags = 0x0002 | 0x0100; // O_RDWR | O_NOFOLLOW

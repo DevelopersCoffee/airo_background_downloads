@@ -256,7 +256,8 @@ void main() {
     final destination = File('${tempDir.path}/n1.bin');
     final outsideDir = await Directory.systemTemp.createTemp('n1-outside-');
     final outsideTarget = '${outsideDir.path}/outside_target';
-    await Link('${destination.path}.partial.work').create(outsideTarget);
+    final workLinkPath = '${destination.path}.partial.work';
+    await Link(workLinkPath).create(outsideTarget);
 
     final url = await bindServer((request) async {
       request.response
@@ -274,6 +275,16 @@ void main() {
         destinationPath: destination.path,
         expectedBytes: payload.length,
       ),
+    );
+
+    await downloads.events.firstWhere(
+      (event) =>
+          event.artifactId == 'n1-work-symlink' &&
+          event.status == DownloadStatus.downloading,
+    );
+    expect(
+      FileSystemEntity.typeSync(workLinkPath, followLinks: false),
+      isNot(FileSystemEntityType.link),
     );
 
     final terminal = await waitForTerminal(downloads, 'n1-work-symlink');

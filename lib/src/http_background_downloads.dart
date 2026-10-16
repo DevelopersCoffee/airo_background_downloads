@@ -10,7 +10,6 @@ import 'http/partial_file_io.dart';
 import 'http/download_directory_guard.dart';
 import 'http/partial_storage_cleanup.dart';
 import 'http/partial_storage_paths.dart';
-import 'http/partial_file_stat.dart';
 import 'http/posix_variadic.dart';
 import 'http/partial_path_guard.dart';
 import 'http/resume_policy.dart';

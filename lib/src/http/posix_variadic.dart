@@ -153,8 +153,9 @@ void _runWithCheckedClose(int fd, String path, void Function() action) {
       }
     }
   }
-  if (actionError != null) {
-    Error.throwWithStackTrace(actionError!, actionStack!);
+  final err = actionError;
+  if (err != null) {
+    Error.throwWithStackTrace(err, actionStack ?? StackTrace.current);
   }
 }
 

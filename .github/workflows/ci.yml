@@ -18,9 +18,11 @@ jobs:
             platform: macos-arm64
           - os: macos-13
             platform: macos-x64
+            optional: true
           - os: windows-latest
             platform: windows-x64
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional == true }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2

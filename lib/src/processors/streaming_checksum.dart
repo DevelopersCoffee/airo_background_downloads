@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 
+import '../http/posix_file_read.dart';
 import '../models/checksum.dart';
 
 /// Computes a lowercase hex digest for [file] using chunked reads.
@@ -9,7 +10,11 @@ Future<String> streamingChecksumHex(
   File file,
   AiroChecksumAlgorithm algorithm,
 ) async {
-  final stream = file.openRead();
+  final stream = Platform.isMacOS
+      ? Stream.fromIterable([
+          await readRegularFileBytesPosix(file.path),
+        ])
+      : file.openRead();
   final Digest digest = switch (algorithm) {
     AiroChecksumAlgorithm.sha256 => await sha256.bind(stream).first,
     AiroChecksumAlgorithm.sha1 => await sha1.bind(stream).first,

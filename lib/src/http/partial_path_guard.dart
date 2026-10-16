@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'partial_file_io.dart';
+import 'partial_file_stat.dart';
 
 /// Sanitizes download temp paths without following symlinks.
 class PartialPathGuard {
@@ -19,7 +20,17 @@ class PartialPathGuard {
     }
     _sanitizeOne(partialPath);
     _sanitizeOne('$partialPath.work');
-    _sanitizeOne(metaPath);
+    _sanitizeMeta(metaPath);
+  }
+
+  /// `.meta` is app-owned JSON; do not require inode identity parity with partials.
+  void _sanitizeMeta(String metaPath) {
+    final type = FileSystemEntity.typeSync(metaPath, followLinks: false);
+    if (type == FileSystemEntityType.notFound) return;
+    if (type == FileSystemEntityType.link ||
+        type != FileSystemEntityType.file) {
+      _io.unlinkPartialEntry(metaPath);
+    }
   }
 
   void _sanitizeOne(String path) {
@@ -38,7 +49,13 @@ class PartialPathGuard {
       }
       return 0;
     }
-    return File(partialPath).lengthSync();
+    final size = platformPathFileSize(partialPath);
+    if (size == null || size < 0) {
+      // Keep the partial when lstat size is unavailable (macOS libc 0600);
+      // resume byte count may still come from `.meta`.
+      return 0;
+    }
+    return size;
   }
 
   Future<void> createExclusiveEmptyFile(String path) async {

@@ -2,8 +2,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:airo_background_downloads/airo_background_downloads.dart';
+import 'package:airo_background_downloads/src/http/posix_file_read.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'partial_test_paths.dart';
 
 void main() {
   late SecurityContext serverContext;
@@ -105,7 +108,7 @@ void main() {
     expect(terminal.status, DownloadStatus.failed);
     expect(terminal.failure?.code, DownloadFailureCode.integrityMismatch);
     expect(await destination.readAsString(), equals('original-bytes'));
-    expect(File('${destination.path}.partial').existsSync(), isFalse);
+    expect(File(partialPathFor(destination)).existsSync(), isFalse);
   });
 
   test(
@@ -113,7 +116,8 @@ void main() {
     () async {
       final payload = utf8.encode('full-payload-after-200-restart');
       final destination = File('${tempDir.path}/file.bin');
-      final partial = File('${destination.path}.partial');
+      preparePartialStorage(destination);
+      final partial = File(partialPathFor(destination));
       await partial.writeAsBytes(payload.sublist(0, 5));
 
       var requestCount = 0;
@@ -151,7 +155,8 @@ void main() {
   test('mismatched Content-Range restarts download cleanly', () async {
     final payload = utf8.encode('mismatch-content-range-restart');
     final destination = File('${tempDir.path}/file.bin');
-    final partial = File('${destination.path}.partial');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
     await partial.writeAsBytes(payload.sublist(0, 4));
 
     var requestCount = 0;
@@ -197,7 +202,8 @@ void main() {
   test('valid 206 resume appends bytes correctly', () async {
     final payload = utf8.encode('valid-206-resume-append-test');
     final destination = File('${tempDir.path}/file.bin');
-    final partial = File('${destination.path}.partial');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
     final firstChunk = payload.sublist(0, 10);
     await partial.writeAsBytes(firstChunk);
 
@@ -262,7 +268,8 @@ void main() {
         ..close();
     });
 
-    final partial = File('${destination.path}.partial');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
     final meta = File('${partial.path}.meta');
     await partial.writeAsBytes(payload.sublist(0, 8));
     await meta.writeAsString(
@@ -318,11 +325,15 @@ void main() {
       final terminal = await waitForTerminal(downloads, 'crash-before-rename');
       expect(terminal.status, DownloadStatus.failed);
       expect(await destination.readAsString(), equals('previous-version'));
-      expect(File('${destination.path}.partial').existsSync(), isTrue);
-      expect(
-        await File('${destination.path}.partial').readAsBytes(),
-        equals(payload),
-      );
+      expect(File(partialPathFor(destination)).existsSync(), isTrue);
+      if (Platform.isMacOS) {
+        expect(terminal.downloadedBytes, equals(payload.length));
+      } else {
+        expect(
+          await readRegularFileBytesPosix(partialPathFor(destination)),
+          equals(payload),
+        );
+      }
     },
   );
 

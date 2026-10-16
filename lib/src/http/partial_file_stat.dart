@@ -5,6 +5,7 @@ import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 
 import 'partial_file_identity.dart';
+import 'posix_variadic.dart';
 
 /// lstat/fstat without following symlinks. Returns null on failure.
 PartialFileIdentity? platformLstat(String path) {
@@ -44,28 +45,41 @@ int platformCurrentUserId() {
 bool get _isLinuxArm64 =>
     Platform.isLinux && Abi.current() == Abi.linuxArm64;
 
-bool get _isDarwinX64 =>
-    Platform.isMacOS && Abi.current() == Abi.macosX64;
-
 typedef _StatPathNative = Int32 Function(Pointer<Utf8>, Pointer<Void>);
 typedef _StatPathDart = int Function(Pointer<Utf8>, Pointer<Void>);
 typedef _StatFdNative = Int32 Function(Int32, Pointer<Void>);
 typedef _StatFdDart = int Function(int, Pointer<Void>);
 
 _StatPathDart? _lookupDarwinLstat(DynamicLibrary lib) {
-  final name = _isDarwinX64 ? 'lstat\$INODE64' : 'lstat';
+  if (!Platform.isMacOS) return null;
   try {
-    return lib.lookupFunction<_StatPathNative, _StatPathDart>(name);
+    return lib.lookupFunction<_StatPathNative, _StatPathDart>(
+      'lstat\$INODE64',
+    );
   } on Object {
+    if (Abi.current() == Abi.macosArm64) {
+      try {
+        return lib.lookupFunction<_StatPathNative, _StatPathDart>('lstat');
+      } on Object {
+        return null;
+      }
+    }
     return null;
   }
 }
 
 _StatFdDart? _lookupDarwinFstat(DynamicLibrary lib) {
-  final name = _isDarwinX64 ? 'fstat\$INODE64' : 'fstat';
+  if (!Platform.isMacOS) return null;
   try {
-    return lib.lookupFunction<_StatFdNative, _StatFdDart>(name);
+    return lib.lookupFunction<_StatFdNative, _StatFdDart>('fstat\$INODE64');
   } on Object {
+    if (Abi.current() == Abi.macosArm64) {
+      try {
+        return lib.lookupFunction<_StatFdNative, _StatFdDart>('fstat');
+      } on Object {
+        return null;
+      }
+    }
     return null;
   }
 }
@@ -132,6 +146,13 @@ PartialFileIdentity? _parseLinuxStat(Pointer<Uint8> buf) {
     linkCount: nlink,
     ownerUid: uid,
   );
+}
+
+int? _linuxStatSize(Pointer<Uint8> buf) {
+  final view = buf.asTypedList(_linuxStatBufSize).buffer.asByteData();
+  return _isLinuxArm64
+      ? view.getInt64(32, Endian.host)
+      : view.getInt64(48, Endian.host);
 }
 
 PartialFileIdentity? _darwinLstat(String path) {
@@ -242,6 +263,100 @@ PartialFileIdentity? _parseDarwinStat(Pointer<Uint8> buf) {
     linkCount: nlink,
     ownerUid: uid,
   );
+}
+
+int? _darwinStatSize(Pointer<Uint8> buf) {
+  final view = buf.asTypedList(_darwinStatBufSize).buffer.asByteData();
+  return view.getInt64(96, Endian.host);
+}
+
+/// File size from fstat on an open fd, or null when stat fails.
+int? platformFstatFileSize(int fd) {
+  if (Platform.isLinux) {
+    final lib = DynamicLibrary.open('libc.so.6');
+    final fstatFn = lib.lookupFunction<
+        Int32 Function(Int32, Pointer<Void>),
+        int Function(int, Pointer<Void>)>('fstat');
+    final buf = calloc<Uint8>(_linuxStatBufSize);
+    try {
+      if (fstatFn(fd, buf.cast()) != 0) return null;
+      return _linuxStatSize(buf);
+    } finally {
+      calloc.free(buf);
+    }
+  }
+  if (Platform.isMacOS) {
+    final lib = DynamicLibrary.open('libSystem.dylib');
+    final fstatFn = _lookupDarwinFstat(lib);
+    if (fstatFn == null) return null;
+    final buf = calloc<Uint8>(_darwinStatBufSize);
+    try {
+      if (fstatFn(fd, buf.cast()) != 0) return null;
+      return _darwinStatSize(buf);
+    } finally {
+      calloc.free(buf);
+    }
+  }
+  return null;
+}
+
+/// File size from fstat after `open(O_RDONLY)` (no follow on Linux).
+int? platformPathFileSizeFstat(String path) {
+  if (!Platform.isLinux && !Platform.isMacOS) return null;
+  final lib = posixLib();
+  final closeFn = lib.lookupFunction<
+      Int32 Function(Int32),
+      int Function(int)>('close');
+  const linuxORdonly = 0;
+  const linuxONoFollow = 0x8000;
+  const darwinORdonly = 0;
+  const darwinONoFollow = 0x0100;
+  final flags = Platform.isLinux
+      ? linuxORdonly | linuxONoFollow
+      : darwinORdonly | darwinONoFollow;
+  final fd = posixOpen(path, flags);
+  if (fd < 0) return null;
+  try {
+    return platformFstatFileSize(fd);
+  } finally {
+    closeFn(fd);
+  }
+}
+
+/// File size from lstat (no follow), or null when stat fails.
+int? platformPathFileSize(String path) {
+  if (Platform.isLinux) {
+    final lib = DynamicLibrary.open('libc.so.6');
+    final lstatFn = _lookupLinuxLstat(lib);
+    if (lstatFn == null) return null;
+    final pathPtr = path.toNativeUtf8();
+    final buf = calloc<Uint8>(_linuxStatBufSize);
+    try {
+      if (lstatFn(pathPtr, buf.cast()) != 0) return null;
+      return _linuxStatSize(buf);
+    } finally {
+      calloc.free(buf);
+      malloc.free(pathPtr);
+    }
+  }
+  if (Platform.isMacOS) {
+    final lib = DynamicLibrary.open('libSystem.dylib');
+    final lstatFn = _lookupDarwinLstat(lib);
+    if (lstatFn == null) return null;
+    final pathPtr = path.toNativeUtf8();
+    final buf = calloc<Uint8>(_darwinStatBufSize);
+    try {
+      if (lstatFn(pathPtr, buf.cast()) != 0) return null;
+      return _darwinStatSize(buf);
+    } finally {
+      calloc.free(buf);
+      malloc.free(pathPtr);
+    }
+  }
+  if (Platform.isWindows) {
+    return File(path).lengthSync();
+  }
+  return null;
 }
 
 PartialFileIdentity? _windowsPathStat(String path) {

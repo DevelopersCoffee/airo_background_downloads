@@ -4,9 +4,27 @@ import 'dart:io';
 import 'package:airo_background_downloads/airo_background_downloads.dart';
 import 'package:airo_background_downloads/src/http/partial_file_io.dart';
 import 'package:airo_background_downloads/src/http/partial_file_io_posix.dart';
+import 'package:airo_background_downloads/src/http/download_directory_guard.dart';
+import 'package:airo_background_downloads/src/http/partial_file_stat.dart';
+import 'package:airo_background_downloads/src/http/partial_storage_paths.dart';
+import 'package:airo_background_downloads/src/http/posix_file_read.dart';
 import 'package:airo_background_downloads/src/http/posix_syscalls.dart';
+import 'package:airo_background_downloads/src/http/posix_variadic.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'partial_test_paths.dart';
+
+Future<List<int>> _readFileBytes(String path) async {
+  if (Platform.isMacOS) {
+    return readRegularFileBytesPosix(path);
+  }
+  return File(path).readAsBytes();
+}
+
+Future<String> _readFileString(String path) async {
+  return utf8.decode(await _readFileBytes(path));
+}
 
 void main() {
   late SecurityContext serverContext;
@@ -82,7 +100,8 @@ void main() {
     final stale = List<int>.filled(40, 'A'.codeUnitAt(0));
     final fullB = List<int>.filled(100, 'B'.codeUnitAt(0));
     final destination = File('${tempDir.path}/mixed.bin');
-    final partial = File('${destination.path}.partial');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
     await partial.writeAsBytes(stale);
 
     final url = await bindServer((request) async {
@@ -117,13 +136,14 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'b1-no-validator');
     expect(terminal.status, DownloadStatus.completed);
-    expect(await destination.readAsBytes(), equals(fullB));
+    expect(await _readFileBytes(destination.path), equals(fullB));
   });
 
   test('B2 star total Content-Range triggers clean restart', () async {
     final payload = utf8.encode('star-total-restart-payload!!');
     final destination = File('${tempDir.path}/star.bin');
-    final partial = File('${destination.path}.partial');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
     await partial.writeAsBytes(payload.sublist(0, 10));
 
     var requestCount = 0;
@@ -159,8 +179,232 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'b2-star-total');
     expect(terminal.status, DownloadStatus.completed);
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileBytes(destination.path), equals(payload));
     expect(requestCount, equals(2));
+  });
+
+  test('committed destination uses umask-adjusted mode and removes empty partial storage', () async {
+    if (!Platform.isLinux && !Platform.isMacOS) return;
+    final payload = utf8.encode('committed-mode-0644-payload');
+    final destination = File('${tempDir.path}/mode644.bin');
+    final url = await bindServer((request) async {
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..contentLength = payload.length
+        ..add(payload)
+        ..close();
+    });
+
+    final downloads = HttpBackgroundDownloads(clientFactory: testClient);
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'mode-644',
+        source: url,
+        destinationPath: destination.path,
+        expectedBytes: payload.length,
+      ),
+    );
+    final terminal = await waitForTerminal(downloads, 'mode-644');
+    expect(terminal.status, DownloadStatus.completed);
+    final mode = platformPathMode(destination.path);
+    expect(mode, isNotNull);
+    expect(mode! & 0x1FF, equals(posixCommittedRegularFileMode()));
+    final storage = PartialStoragePaths.forDestination(destination.path).storageDirectory;
+    expect(Directory(storage).existsSync(), isFalse);
+  });
+
+  test('F1 200 response to Range request never splices onto partial prefix', () async {
+    const totalSize = 100000;
+    const resumeAt = 60000;
+    final payload = List<int>.generate(totalSize, (index) => index % 251);
+    final destination = File('${tempDir.path}/f1-range-200.bin');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
+    await partial.writeAsBytes(List.filled(resumeAt, 0x41));
+
+    final url = await bindServer((request) async {
+      final range = request.headers.value(HttpHeaders.rangeHeader);
+      if (range != null && range.startsWith('bytes=$resumeAt')) {
+        request.response
+          ..statusCode = HttpStatus.ok
+          ..contentLength = totalSize - resumeAt
+          ..add(List.filled(totalSize - resumeAt, 0x5A))
+          ..close();
+        return;
+      }
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..contentLength = totalSize
+        ..add(payload)
+        ..close();
+    });
+
+    await File('${partial.path}.meta').writeAsString(
+      jsonEncode({
+        'source': url.toString(),
+        'expectedBytes': totalSize,
+        'etag': '"f1-strong"',
+        'resumeByteOffset': resumeAt,
+      }),
+    );
+
+    final downloads = HttpBackgroundDownloads(clientFactory: testClient);
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'f1-range-200',
+        source: url,
+        destinationPath: destination.path,
+        expectedBytes: totalSize,
+      ),
+    );
+
+    final terminal = await waitForTerminal(downloads, 'f1-range-200');
+    if (destination.existsSync()) {
+      final bytes = await _readFileBytes(destination.path);
+      expect(
+        bytes.length,
+        isNot(equals(totalSize)),
+        reason: 'must not commit a spliced 100000-byte file',
+      );
+      if (bytes.length == totalSize) {
+        expect(bytes.sublist(resumeAt), isNot(equals(List.filled(40000, 0x5A))));
+      }
+    }
+    if (terminal.status == DownloadStatus.completed) {
+      expect(await _readFileBytes(destination.path), equals(payload));
+    } else {
+      expect(terminal.status, DownloadStatus.failed);
+    }
+  });
+
+  test('G1 206 without Content-Range refuses resume splice', () async {
+    const totalSize = 100000;
+    const resumeAt = 60000;
+    final payload = List<int>.generate(totalSize, (index) => index % 251);
+    final destination = File('${tempDir.path}/g1-206-no-cr.bin');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
+    await partial.writeAsBytes(List.filled(resumeAt, 0x41));
+
+    final url = await bindServer((request) async {
+      final range = request.headers.value(HttpHeaders.rangeHeader);
+      if (range != null && range.startsWith('bytes=$resumeAt')) {
+        request.response
+          ..statusCode = HttpStatus.partialContent
+          ..contentLength = totalSize - resumeAt
+          ..add(List.filled(totalSize - resumeAt, 0x5A))
+          ..close();
+        return;
+      }
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..contentLength = totalSize
+        ..add(payload)
+        ..close();
+    });
+
+    await File('${partial.path}.meta').writeAsString(
+      jsonEncode({
+        'source': url.toString(),
+        'expectedBytes': totalSize,
+        'etag': '"g1-strong"',
+        'resumeByteOffset': resumeAt,
+      }),
+    );
+
+    final downloads = HttpBackgroundDownloads(clientFactory: testClient);
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'g1-206-no-cr',
+        source: url,
+        destinationPath: destination.path,
+        expectedBytes: totalSize,
+      ),
+    );
+
+    final terminal = await waitForTerminal(downloads, 'g1-206-no-cr');
+    if (destination.existsSync()) {
+      final bytes = await _readFileBytes(destination.path);
+      final splicedCorruptFile =
+          bytes.length == totalSize &&
+          bytes.sublist(0, resumeAt).every((byte) => byte == 0x41) &&
+          bytes.sublist(resumeAt).every((byte) => byte == 0x5A);
+      expect(
+        splicedCorruptFile,
+        isFalse,
+        reason: 'must not commit partial prefix spliced with 206 body',
+      );
+    }
+    if (terminal.status == DownloadStatus.completed) {
+      expect(await _readFileBytes(destination.path), equals(payload));
+    } else {
+      expect(terminal.status, DownloadStatus.failed);
+    }
+  });
+
+  test('G1 invalid Content-Range refuses resume splice', () async {
+    const totalSize = 100000;
+    const resumeAt = 60000;
+    final payload = List<int>.generate(totalSize, (index) => index % 251);
+    final destination = File('${tempDir.path}/g1-206-bad-cr.bin');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
+    await partial.writeAsBytes(List.filled(resumeAt, 0x41));
+
+    final url = await bindServer((request) async {
+      final range = request.headers.value(HttpHeaders.rangeHeader);
+      if (range != null && range.startsWith('bytes=$resumeAt')) {
+        request.response
+          ..statusCode = HttpStatus.partialContent
+          ..headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes 0-${totalSize - 1}/$totalSize',
+          )
+          ..contentLength = totalSize - resumeAt
+          ..add(List.filled(totalSize - resumeAt, 0x5A))
+          ..close();
+        return;
+      }
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..contentLength = totalSize
+        ..add(payload)
+        ..close();
+    });
+
+    await File('${partial.path}.meta').writeAsString(
+      jsonEncode({
+        'source': url.toString(),
+        'expectedBytes': totalSize,
+        'etag': '"g1-bad-cr-strong"',
+        'resumeByteOffset': resumeAt,
+      }),
+    );
+
+    final downloads = HttpBackgroundDownloads(clientFactory: testClient);
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'g1-206-bad-cr',
+        source: url,
+        destinationPath: destination.path,
+        expectedBytes: totalSize,
+      ),
+    );
+
+    final terminal = await waitForTerminal(downloads, 'g1-206-bad-cr');
+    if (destination.existsSync()) {
+      final bytes = await _readFileBytes(destination.path);
+      final splicedCorruptFile =
+          bytes.length == totalSize &&
+          bytes.sublist(0, resumeAt).every((byte) => byte == 0x41) &&
+          bytes.sublist(resumeAt).every((byte) => byte == 0x5A);
+      expect(splicedCorruptFile, isFalse);
+    }
+    if (terminal.status == DownloadStatus.completed) {
+      expect(await _readFileBytes(destination.path), equals(payload));
+    } else {
+      expect(terminal.status, DownloadStatus.failed);
+    }
   });
 
   test('B3 fresh download rejects 206 without Range request', () async {
@@ -202,7 +446,7 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'b3-no-range-206');
     expect(terminal.status, DownloadStatus.completed);
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileBytes(destination.path), equals(payload));
     expect(requestCount, equals(2));
   });
 
@@ -213,7 +457,8 @@ void main() {
     await victim.writeAsBytes(victimBytes);
 
     final destination = File('${tempDir.path}/k1-dest.bin');
-    final partial = File('${destination.path}.partial');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
     if (Platform.isWindows) {
       final linkResult = await Process.run(
         'powershell',
@@ -276,8 +521,8 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'k1-hardlink-resume');
     expect(terminal.status, DownloadStatus.completed);
-    expect(await victim.readAsBytes(), equals(victimBytes));
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileBytes(victim.path), equals(victimBytes));
+    expect(await _readFileBytes(destination.path), equals(payload));
     expect(
       requestLog.any((header) => header == 'bytes=40-'),
       isFalse,
@@ -289,7 +534,8 @@ void main() {
     final victim = File('${tempDir.path}/victim.bin');
     await victim.writeAsBytes(utf8.encode('unchanged-victim-bytes'));
     final destination = File('${tempDir.path}/out.bin');
-    final partial = File('${destination.path}.partial');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
 
     if (Platform.isWindows) {
       final linkResult = await Process.run(
@@ -328,8 +574,8 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'b4-hardlink');
     expect(terminal.status, DownloadStatus.completed);
-    expect(await victim.readAsString(), equals('unchanged-victim-bytes'));
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileString(victim.path), equals('unchanged-victim-bytes'));
+    expect(await _readFileBytes(destination.path), equals(payload));
   });
 
   test('N1 dangling partial.work symlink is not followed during download', () async {
@@ -337,7 +583,8 @@ void main() {
     final destination = File('${tempDir.path}/n1.bin');
     final outsideDir = await Directory.systemTemp.createTemp('n1-outside-');
     final outsideTarget = '${outsideDir.path}/outside_target';
-    final workLinkPath = '${destination.path}.partial.work';
+    ensurePrivatePartialStorage(destination.path);
+    final workLinkPath = workPathFor(destination);
     await Link(workLinkPath).create(outsideTarget);
 
     final url = await bindServer((request) async {
@@ -374,7 +621,7 @@ void main() {
       FileSystemEntity.typeSync(destination.path, followLinks: false),
       FileSystemEntityType.file,
     );
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileBytes(destination.path), equals(payload));
     expect(File(outsideTarget).existsSync(), isFalse);
     await outsideDir.delete(recursive: true);
   });
@@ -399,24 +646,28 @@ void main() {
         await request.response.flush();
         return;
       }
-      expect(
-        request.headers.value(HttpHeaders.rangeHeader),
-        equals('bytes=60000-'),
-      );
-      expect(
-        request.headers.value(HttpHeaders.ifRangeHeader),
-        equals('"stream-v1"'),
-      );
-      final remainder = payload.sublist(60000);
-      request.response
-        ..statusCode = HttpStatus.partialContent
-        ..headers.set(
-          HttpHeaders.contentRangeHeader,
-          'bytes 60000-${totalSize - 1}/$totalSize',
-        )
-        ..contentLength = remainder.length
-        ..add(remainder)
-        ..close();
+      if (requestCount == 2) {
+        expect(
+          request.headers.value(HttpHeaders.rangeHeader),
+          equals('bytes=60000-'),
+        );
+        expect(
+          request.headers.value(HttpHeaders.ifRangeHeader),
+          equals('"stream-v1"'),
+        );
+        final remainder = payload.sublist(60000);
+        request.response
+          ..statusCode = HttpStatus.partialContent
+          ..headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes 60000-${totalSize - 1}/$totalSize',
+          )
+          ..contentLength = remainder.length
+          ..add(remainder)
+          ..close();
+        return;
+      }
+      fail('Unexpected HTTP request #$requestCount during N2');
     });
 
     final downloads = HttpBackgroundDownloads(clientFactory: testClient);
@@ -449,7 +700,7 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'n2-interrupted');
     expect(terminal.status, DownloadStatus.completed);
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileBytes(destination.path), equals(payload));
     expect(requestCount, equals(2));
     expect(requestLog[1], equals('bytes=60000-'));
   });
@@ -484,14 +735,15 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'n3-dir-fsync');
     expect(terminal.status, DownloadStatus.failed);
-    expect(await destination.readAsString(), equals('prior'));
+    expect(await _readFileString(destination.path), equals('prior'));
   });
 
   test('N4 symlinked partial entry is unlinked before streaming', () async {
     final victim = File('${tempDir.path}/victim-prefix.bin');
     await victim.writeAsBytes(List<int>.filled(32, 7));
     final destination = File('${tempDir.path}/dest-n4.bin');
-    final partial = File('${destination.path}.partial');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
     await Link(partial.path).create(victim.path);
 
     final payload = utf8.encode('n4-full-payload-not-prefix-bytes');
@@ -527,14 +779,15 @@ void main() {
     final terminal = await waitForTerminal(downloads, 'n4-symlink-unlink');
     expect(terminal.status, DownloadStatus.completed);
     expect(await victim.length(), equals(32));
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileBytes(destination.path), equals(payload));
   });
 
   test('B5 symlinked partial does not append through to victim', () async {
     final victim = File('${tempDir.path}/victim4.bin');
     await victim.writeAsBytes(utf8.encode('victim-original'));
     final destination = File('${tempDir.path}/dest5.bin');
-    final partial = File('${destination.path}.partial');
+    preparePartialStorage(destination);
+    final partial = File(partialPathFor(destination));
     await Link(partial.path).create(victim.path);
 
     final payload = utf8.encode('symlink-safe-download-payload-b5');
@@ -574,16 +827,16 @@ void main() {
       FileSystemEntity.typeSync(partial.path, followLinks: false),
       isNot(FileSystemEntityType.link),
     );
-    expect(await victim.readAsString(), equals('victim-original'));
+    expect(await _readFileString(victim.path), equals('victim-original'));
 
     final terminal = await waitForTerminal(downloads, 'b5-symlink');
     expect(terminal.status, DownloadStatus.completed);
-    expect(await victim.readAsString(), equals('victim-original'));
+    expect(await _readFileString(victim.path), equals('victim-original'));
     expect(
       FileSystemEntity.typeSync(destination.path, followLinks: false),
       FileSystemEntityType.file,
     );
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileBytes(destination.path), equals(payload));
   });
 
   test('B6 commit leaves foreign destination.old untouched', () async {
@@ -613,8 +866,8 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'b6-old-file');
     expect(terminal.status, DownloadStatus.completed);
-    expect(await foreignOld.readAsString(), equals('foreign-old-must-survive'));
-    expect(await destination.readAsBytes(), equals(payload));
+    expect(await _readFileString(foreignOld.path), equals('foreign-old-must-survive'));
+    expect(await _readFileBytes(destination.path), equals(payload));
   });
 
   test('B7 sync failure before rename keeps prior destination', () async {
@@ -646,8 +899,8 @@ void main() {
 
     final terminal = await waitForTerminal(downloads, 'b7-fsync');
     expect(terminal.status, DownloadStatus.failed);
-    expect(await destination.readAsString(), equals('keep-me'));
-    expect(File('${destination.path}.partial').existsSync(), isTrue);
+    expect(await _readFileString(destination.path), equals('keep-me'));
+    expect(File(partialPathFor(destination)).existsSync(), isTrue);
   });
 }
 
@@ -684,14 +937,20 @@ class _ThrowingSyncPartialFileIo implements PartialFileIo {
       _delegate.prepareDestinationForCommit(destinationPath);
 
   @override
-  Future<void> syncFile(String path) async {
+  Future<void> syncFile(
+    String path, {
+    expectedIdentityAtReopen,
+  }) async {
     if (path.endsWith('.partial')) {
       _partialSyncCount += 1;
       if (_partialSyncCount >= 2) {
         throw StateError('simulated fsync failure');
       }
     }
-    return _delegate.syncFile(path);
+    return _delegate.syncFile(
+      path,
+      expectedIdentityAtReopen: expectedIdentityAtReopen,
+    );
   }
 
   @override

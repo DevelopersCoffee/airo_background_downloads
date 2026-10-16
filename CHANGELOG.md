@@ -2,12 +2,16 @@
 
 ## 1.2.1
 
-- **Desktop-only HTTP**: `HttpBackgroundDownloads` throws on Android/iOS; use the platform factory for mobile engines.
+- **Desktop-only HTTP**: `HttpBackgroundDownloads` throws on Android/iOS; use `BackgroundDownloads.platform()` for native engines.
 - **Download size**: No implicit 8 GiB cap — set `expectedBytes` and/or `maxDownloadBytes` to bound downloads.
-- **macOS / Darwin stat**: x86_64 uses `lstat$INODE64` / `fstat$INODE64`; fixed `stat64` field offsets; fail closed on `nlink == 0`. CI includes `macos-13` (Intel) when available.
-- **Partial I/O**: POSIX fd-level opens (`O_NOFOLLOW`, `fstat` on handle) on Linux and macOS; download directories created/verified as `0700` owned by the current user.
+- **POSIX variadic FFI**: `open(2)` and `fcntl(2)` use Dart `VarArgs` bindings so `O_CREAT` mode `0600` is correct on Apple arm64 (fixes macOS partial permission workarounds).
+- **Resume protocol (F1)**: No macOS-only append of `200 OK` or synthetic `206` without `Content-Range`; `200` to a `Range` request always restarts from byte 0.
+- **Commit**: `fchmod(0644)` on the partial fd before rename; explicit macOS `F_FULLFSYNC` via fd in `syncFile`; empty `.airo_partials` removed after successful commit.
+- **Partial storage (E2/E3)**: Partials and `.meta` files live under `<dest-dir>/.airo_partials/` (0700 leaf only); no chmod of existing user or temp directories; `/tmp` and system temp use the same checks.
+- **macOS / Darwin stat**: `lstat$INODE64` / `fstat$INODE64` on 64-bit macOS; Intel macOS **not claimed** when `macos-13` CI is queued or optional.
+- **Partial I/O**: fd-level `O_NOFOLLOW` create/append with `fstat` identity checks on Linux and macOS.
 - **Desktop HTTP downloads**: Resume partial files with `Range: bytes=N-`, append on valid `206`/`Content-Range`, and restart cleanly when the server returns `200` or a mismatched range.
-- **Integrity**: `AiroChecksumProcessor` now streams SHA-256/SHA-1/MD5 digests via `package:crypto`; desktop finalize verifies SHA-256 on `.partial` before an atomic rename (Windows-safe replace).
+- **Integrity**: `AiroChecksumProcessor` streams SHA-256/SHA-1/MD5 via `package:crypto`; desktop finalize verifies SHA-256 on `.partial` before atomic rename.
 - **Requests**: `DownloadArtifactRequest.headers` are forwarded on outgoing HTTP requests (merged with `Range`).
 
 ## 1.2.0
@@ -27,4 +31,4 @@
 
 ## 1.0.0
 
-- Initial open-source stable release.
+- Initial release.

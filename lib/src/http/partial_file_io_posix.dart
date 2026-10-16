@@ -7,6 +7,7 @@ import 'partial_file_io.dart';
 import 'partial_file_stat.dart';
 import 'partial_file_writer_posix.dart';
 import 'posix_syscalls.dart';
+import 'posix_variadic.dart';
 
 /// POSIX desktop partial file safety (Linux + macOS).
 base class PosixPartialFileIo implements PartialFileIo {
@@ -109,24 +110,18 @@ base class PosixPartialFileIo implements PartialFileIo {
   }
 
   @override
-  Future<void> syncFile(String path) async {
+  Future<void> syncFile(
+    String path, {
+    PartialFileIdentity? expectedIdentityAtReopen,
+  }) async {
     if (!File(path).existsSync()) {
       throw FileSystemException('Cannot fsync missing file', path);
     }
     if (Platform.isMacOS) {
-      final fd = _syscalls.openDirectory(path, _oRdonly);
-      if (fd < 0) {
-        throw FileSystemException('Cannot open file for fsync', path);
-      }
-      try {
-        if (_syscalls.fsync(fd) != 0) {
-          throw FileSystemException('fsync failed for file', path);
-        }
-      } finally {
-        if (_syscalls.close(fd) != 0) {
-          throw FileSystemException('close failed for file fsync fd', path);
-        }
-      }
+      posixSyncRegularFileViaFd(
+        path,
+        expectedIdentity: expectedIdentityAtReopen,
+      );
       return;
     }
     final raf = await File(path).open(mode: FileMode.read);

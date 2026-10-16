@@ -14,7 +14,10 @@ abstract class PartialFileIo {
 
   void prepareDestinationForCommit(String destinationPath);
 
-  Future<void> syncFile(String path);
+  Future<void> syncFile(
+    String path, {
+    PartialFileIdentity? expectedIdentityAtReopen,
+  });
 
   /// POSIX: directory fsync via open(O_RDONLY)/fsync.
   ///
@@ -72,6 +75,11 @@ abstract class PartialFileWriter {
   PartialFileIdentity get identity;
 
   void writeBytes(List<int> bytes);
+
+  /// Reads the entire partial from the open fd (POSIX only, before [close]).
+  Future<List<int>> readAllBytesFromOpenFd() async {
+    throw UnsupportedError('readAllBytesFromOpenFd');
+  }
 
   Future<void> close();
 }

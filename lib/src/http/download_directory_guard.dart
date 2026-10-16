@@ -1,50 +1,53 @@
-import 'dart:ffi';
 import 'dart:io';
 
-import 'package:ffi/ffi.dart';
-
 import 'partial_file_stat.dart';
+import 'partial_storage_paths.dart';
+import 'posix_variadic.dart';
 
-bool _isPublicTempRoot(String directoryPath) {
-  if (directoryPath == '/tmp') return true;
-  if (directoryPath == Directory.systemTemp.path) return true;
-  return false;
-}
+const _privateDirMode = 0x1C0; // 0700
 
-/// Ensures [directoryPath] exists as a private directory (0700, owned by us, not a symlink).
-void ensurePrivateDownloadDirectory(String directoryPath) {
-  if (directoryPath.isEmpty) return;
-  if (_isPublicTempRoot(directoryPath)) {
-    return;
+/// Ensures [PartialStoragePaths.storageDirectory] exists and is private (0700, owned by us, not a symlink).
+///
+/// Never chmods the destination parent or any pre-existing user directory.
+void ensurePrivatePartialStorage(String destinationPath) {
+  if (destinationPath.isEmpty) {
+    throw FileSystemException('Destination path is empty');
   }
   if (Platform.isWindows) {
-    _ensureWindowsPrivateDownloadDirectory(directoryPath);
+    _ensureWindowsPartialStorage(destinationPath);
     return;
   }
   if (!Platform.isLinux && !Platform.isMacOS) {
-    Directory(directoryPath).createSync(recursive: true);
+    final paths = PartialStoragePaths.forDestination(destinationPath);
+    Directory(paths.storageDirectory).createSync(recursive: true);
     return;
   }
 
+  final destParent = File(destinationPath).parent;
+  if (!destParent.existsSync()) {
+    destParent.createSync(recursive: true);
+  }
+
+  final paths = PartialStoragePaths.forDestination(destinationPath);
+  _ensurePrivatePosixLeaf(paths.storageDirectory);
+}
+
+void _ensurePrivatePosixLeaf(String directoryPath) {
   final type = FileSystemEntity.typeSync(directoryPath, followLinks: false);
   if (type == FileSystemEntityType.link) {
     throw FileSystemException(
-      'Download directory cannot be a symlink',
+      'Partial storage directory cannot be a symlink',
       directoryPath,
     );
   }
   if (type == FileSystemEntityType.notFound) {
-    final parent = Directory(directoryPath).parent;
-    if (parent.path.isNotEmpty && parent.path != directoryPath) {
-      ensurePrivateDownloadDirectory(parent.path);
+    final result = posixMkdir(directoryPath, _privateDirMode);
+    if (result != 0 && !Directory(directoryPath).existsSync()) {
+      throw FileSystemException(
+        'Cannot create partial storage directory',
+        directoryPath,
+      );
     }
-    final mkdirResult = _posixMkdir(directoryPath, 0x1C0);
-    if (mkdirResult != 0 && !Directory(directoryPath).existsSync()) {
-      throw FileSystemException('Cannot create download directory', directoryPath);
-    }
-  }
-  if (_posixChmod(directoryPath, 0x1C0) != 0) {
-    throw FileSystemException('Cannot chmod download directory to 0700', directoryPath);
   }
   _verifyPrivatePosixDirectory(directoryPath);
 }
@@ -53,84 +56,63 @@ void _verifyPrivatePosixDirectory(String directoryPath) {
   final type = FileSystemEntity.typeSync(directoryPath, followLinks: false);
   if (type == FileSystemEntityType.link) {
     throw FileSystemException(
-      'Download directory cannot be a symlink',
+      'Partial storage directory cannot be a symlink',
       directoryPath,
     );
   }
   if (type == FileSystemEntityType.notFound) {
-    throw FileSystemException('Download directory missing', directoryPath);
+    throw FileSystemException('Partial storage directory missing', directoryPath);
   }
   final stat = platformLstat(directoryPath);
   if (stat == null) {
     throw FileSystemException(
-      'Cannot stat download directory',
+      'Cannot stat partial storage directory',
       directoryPath,
     );
   }
   final uid = platformCurrentUserId();
   if (stat.ownerUid != uid) {
     throw FileSystemException(
-      'Download directory not owned by current user',
+      'Partial storage directory not owned by current user',
       directoryPath,
     );
   }
   if (stat.linkCount < 1) {
     throw FileSystemException(
-      'Download directory has invalid link count',
+      'Partial storage directory has invalid link count',
       directoryPath,
     );
   }
-  var mode = File(directoryPath).statSync().mode & 0x1FF;
-  if ((mode & 63) != 0) {
-    _posixChmod(directoryPath, 0x1C0);
-    mode = File(directoryPath).statSync().mode & 0x1FF;
-  }
-  if ((mode & 63) != 0) {
+  final mode = platformPathMode(directoryPath);
+  if (mode == null) {
     throw FileSystemException(
-      'Download directory must be mode 0700 (no group/other access)',
+      'Cannot read mode of partial storage directory',
+      directoryPath,
+    );
+  }
+  if ((mode & 0x1FF) & 63 != 0) {
+    throw FileSystemException(
+      'Partial storage directory must be mode 0700 (no group/other access)',
       directoryPath,
     );
   }
 }
 
-void _ensureWindowsPrivateDownloadDirectory(String directoryPath) {
-  Directory(directoryPath).createSync(recursive: true);
-  final type = FileSystemEntity.typeSync(directoryPath, followLinks: false);
+void _ensureWindowsPartialStorage(String destinationPath) {
+  final paths = PartialStoragePaths.forDestination(destinationPath);
+  final destParent = File(destinationPath).parent;
+  if (!destParent.existsSync()) {
+    destParent.createSync(recursive: true);
+  }
+  Directory(paths.storageDirectory).createSync(recursive: true);
+  final type = FileSystemEntity.typeSync(
+    paths.storageDirectory,
+    followLinks: false,
+  );
   if (type == FileSystemEntityType.link) {
     throw FileSystemException(
-      'Download directory cannot be a symlink',
-      directoryPath,
+      'Partial storage directory cannot be a symlink',
+      paths.storageDirectory,
     );
   }
 }
-
-int _posixMkdir(String path, int mode) {
-  final lib = DynamicLibrary.open(
-    Platform.isLinux ? 'libc.so.6' : 'libSystem.dylib',
-  );
-  final mkdirFn = lib.lookupFunction<MkdirNative, MkdirDart>('mkdir');
-  final pathPtr = path.toNativeUtf8();
-  try {
-    return mkdirFn(pathPtr, mode);
-  } finally {
-    malloc.free(pathPtr);
-  }
-}
-
-int _posixChmod(String path, int mode) {
-  final lib = DynamicLibrary.open(
-    Platform.isLinux ? 'libc.so.6' : 'libSystem.dylib',
-  );
-  final chmodFn = lib.lookupFunction<ChmodNative, ChmodDart>('chmod');
-  final pathPtr = path.toNativeUtf8();
-  try {
-    return chmodFn(pathPtr, mode);
-  } finally {
-    malloc.free(pathPtr);
-  }
-}
-
-typedef MkdirNative = Int32 Function(Pointer<Utf8>, Int32);
-typedef MkdirDart = int Function(Pointer<Utf8>, int);
-typedef ChmodNative = Int32 Function(Pointer<Utf8>, Int32);
-typedef ChmodDart = int Function(Pointer<Utf8>, int);

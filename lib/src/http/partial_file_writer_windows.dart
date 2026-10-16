@@ -21,6 +21,11 @@ class WindowsPartialFileWriter implements PartialFileWriter {
   final CloseHandleDart _closeHandle;
 
   @override
+  Future<List<int>> readAllBytesFromOpenFd() async {
+    throw UnsupportedError('readAllBytesFromOpenFd');
+  }
+
+  @override
   void writeBytes(List<int> bytes) {
     if (bytes.isEmpty) return;
     final buffer = calloc<Uint8>(bytes.length);

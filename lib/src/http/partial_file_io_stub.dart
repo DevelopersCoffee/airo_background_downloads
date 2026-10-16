@@ -23,7 +23,10 @@ class StubPartialFileIo implements PartialFileIo {
   void prepareDestinationForCommit(String destinationPath) {}
 
   @override
-  Future<void> syncFile(String path) async {}
+  Future<void> syncFile(
+    String path, {
+    PartialFileIdentity? expectedIdentityAtReopen,
+  }) async {}
 
   @override
   Future<void> syncDirectory(String directoryPath) async {}

@@ -5,15 +5,23 @@ import 'package:ffi/ffi.dart';
 import 'partial_file_identity.dart';
 import 'partial_file_io.dart';
 import 'partial_file_stat.dart';
+import 'posix_variadic.dart';
 
 class PosixPartialFileWriter implements PartialFileWriter {
-  PosixPartialFileWriter._(this._fd, this.identity, this._close, this._write);
+  PosixPartialFileWriter._(
+    this._fd,
+    this.identity,
+    this._close,
+    this._write,
+    this._fsync,
+  );
 
   final int _fd;
   @override
   final PartialFileIdentity identity;
   final CloseDart _close;
   final WriteDart _write;
+  final FsyncDart _fsync;
 
   @override
   void writeBytes(List<int> bytes) {
@@ -36,10 +44,52 @@ class PosixPartialFileWriter implements PartialFileWriter {
   }
 
   @override
+  Future<List<int>> readAllBytesFromOpenFd() async {
+    final lib = posixLib();
+    final lseekFn = lib.lookupFunction<LseekNative, LseekDart>('lseek');
+    final readFn = lib.lookupFunction<ReadNative, ReadDart>('read');
+    final offset = lseekFn(_fd, 0, _seekSet);
+    if (offset < 0) {
+      throw FileSystemException('lseek failed for partial fd');
+    }
+    final chunks = <int>[];
+    final buffer = calloc<Uint8>(65536);
+    try {
+      while (true) {
+        final n = readFn(_fd, buffer.cast(), 65536);
+        if (n < 0) {
+          throw FileSystemException('read failed for partial fd');
+        }
+        if (n == 0) break;
+        chunks.addAll(buffer.asTypedList(n));
+      }
+    } finally {
+      calloc.free(buffer);
+    }
+    return chunks;
+  }
+
+  @override
   Future<void> close() async {
-    final result = _close(_fd);
-    if (result != 0) {
-      throw FileSystemException('close failed for partial fd');
+    Object? syncError;
+    try {
+      if (Platform.isLinux) {
+        if (_fsync(_fd) != 0) {
+          syncError = FileSystemException('fsync failed for partial fd');
+        }
+      } else if (Platform.isMacOS) {
+        if (posixDarwinFullFsync(_fd) != 0) {
+          syncError = FileSystemException('F_FULLFSYNC failed for partial fd');
+        }
+      }
+    } finally {
+      final result = _close(_fd);
+      if (syncError != null) {
+        throw syncError;
+      }
+      if (result != 0) {
+        throw FileSystemException('close failed for partial fd');
+      }
     }
   }
 
@@ -49,57 +99,54 @@ class PosixPartialFileWriter implements PartialFileWriter {
     required int currentUid,
     PartialFileIdentity? expectedIdentity,
     PartialFileIdentity? Function(int fd)? fstatFn,
+    FsyncDart? fsyncFn,
   }) {
-    final lib = DynamicLibrary.open(
-      Platform.isLinux ? 'libc.so.6' : 'libSystem.dylib',
-    );
-    final openFn = lib.lookupFunction<OpenNative, OpenDart>('open');
+    final lib = posixLib();
     final closeFn = lib.lookupFunction<CloseNative, CloseDart>('close');
     final writeFn = lib.lookupFunction<WriteNative, WriteDart>('write');
+    final fsync = fsyncFn ??
+        lib.lookupFunction<FsyncNative, FsyncDart>('fsync');
 
     final flags = append
         ? _openFlagsAppend()
         : _openFlagsCreateExclusive();
-    final pathPtr = path.toNativeUtf8();
+    final fd = append
+        ? posixOpen(path, flags)
+        : posixOpen(path, flags, mode: 384); // 0600
+    if (fd < 0) {
+      throw FileSystemException('Cannot open partial without following links', path);
+    }
     try {
-      final fd = openFn(pathPtr, flags, 384); // 0600
-      if (fd < 0) {
-        throw FileSystemException('Cannot open partial without following links', path);
-      }
-      try {
-        final stat = (fstatFn ?? platformFstat)(fd);
-        if (stat == null) {
-          closeFn(fd);
-          throw FileSystemException('fstat failed after open', path);
-        }
-        if (stat.linkCount != 1) {
-          closeFn(fd);
-          throw FileSystemException(
-            'Refusing to write: partial nlink=${stat.linkCount}',
-            path,
-          );
-        }
-        if (stat.ownerUid != currentUid) {
-          closeFn(fd);
-          throw FileSystemException(
-            'Refusing to write: partial owned by uid ${stat.ownerUid}',
-            path,
-          );
-        }
-        if (expectedIdentity != null && !expectedIdentity.matches(stat)) {
-          closeFn(fd);
-          throw FileSystemException(
-            'Refusing to write: partial identity changed',
-            path,
-          );
-        }
-        return PosixPartialFileWriter._(fd, stat, closeFn, writeFn);
-      } on Object {
+      final stat = (fstatFn ?? platformFstat)(fd);
+      if (stat == null) {
         closeFn(fd);
-        rethrow;
+        throw FileSystemException('fstat failed after open', path);
       }
-    } finally {
-      malloc.free(pathPtr);
+      if (stat.linkCount != 1) {
+        closeFn(fd);
+        throw FileSystemException(
+          'Refusing to write: partial nlink=${stat.linkCount}',
+          path,
+        );
+      }
+      if (stat.ownerUid != currentUid) {
+        closeFn(fd);
+        throw FileSystemException(
+          'Refusing to write: partial owned by uid ${stat.ownerUid}',
+          path,
+        );
+      }
+      if (expectedIdentity != null && !expectedIdentity.matches(stat)) {
+        closeFn(fd);
+        throw FileSystemException(
+          'Refusing to write: partial identity changed',
+          path,
+        );
+      }
+      return PosixPartialFileWriter._(fd, stat, closeFn, writeFn, fsync);
+    } on Object {
+      closeFn(fd);
+      rethrow;
     }
   }
 }
@@ -108,35 +155,38 @@ int _openFlagsAppend() {
   if (Platform.isLinux) {
     return _linuxOWronly | _linuxOAppend | _linuxONoFollow;
   }
-  // macOS: O_RDWR so a concurrent read handle (e.g. fsync) is not EACCES while writing.
-  return _darwinORdwr | _darwinOAppend | _darwinONoFollow;
+  return _darwinOWronly | _darwinOAppend | _darwinONoFollow;
 }
 
 int _openFlagsCreateExclusive() {
   if (Platform.isLinux) {
     return _linuxOWronly | _linuxOCreat | _linuxOExcl | _linuxONoFollow;
   }
-  return _darwinORdwr | _darwinOCreat | _darwinOExcl | _darwinONoFollow;
+  return _darwinOWronly | _darwinOCreat | _darwinOExcl | _darwinONoFollow;
 }
 
-// Linux fcntl.h
 const _linuxOWronly = 1;
 const _linuxOCreat = 64;
 const _linuxOExcl = 128;
 const _linuxOAppend = 1024;
-const _linuxONoFollow = 0x8000; // 0100000 octal
+const _linuxONoFollow = 0x8000;
 
-// Darwin fcntl.h
-const _darwinORdwr = 0x0002;
+const _darwinOWronly = 0x0001;
 const _darwinOCreat = 0x0200;
 const _darwinOExcl = 0x0800;
 const _darwinOAppend = 0x0008;
 const _darwinONoFollow = 0x0100;
 
-typedef OpenNative = Int32 Function(Pointer<Utf8>, Int32, Int32);
-typedef OpenDart = int Function(Pointer<Utf8>, int, int);
 typedef CloseNative = Int32 Function(Int32);
 typedef CloseDart = int Function(int);
 typedef WriteNative =
     IntPtr Function(Int32 fd, Pointer<Void> buf, IntPtr count);
 typedef WriteDart = int Function(int fd, Pointer<Void> buf, int count);
+typedef FsyncNative = Int32 Function(Int32);
+typedef FsyncDart = int Function(int);
+typedef LseekNative = Int64 Function(Int32, Int64, Int32);
+typedef LseekDart = int Function(int, int, int);
+typedef ReadNative = IntPtr Function(Int32, Pointer<Void>, IntPtr);
+typedef ReadDart = int Function(int, Pointer<Void>, int);
+
+const _seekSet = 0;

@@ -8,6 +8,9 @@ import 'download_models.dart';
 import 'http/partial_file_identity.dart';
 import 'http/partial_file_io.dart';
 import 'http/download_directory_guard.dart';
+import 'http/partial_storage_cleanup.dart';
+import 'http/partial_storage_paths.dart';
+import 'http/posix_variadic.dart';
 import 'http/partial_path_guard.dart';
 import 'http/resume_policy.dart';
 import 'http/resume_validator_store.dart';
@@ -68,6 +71,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     }
 
     final job = _HttpDownloadJob(request: request);
+    job.runCycle = Completer<void>();
     _jobs[request.artifactId] = job;
     _emit(job.queued());
     unawaited(_run(job));
@@ -110,6 +114,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     if (job == null) return;
     job.cancelRequested = true;
     job.client?.close(force: true);
+    await job.runCycle?.future;
     job.status = DownloadStatus.cancelled;
     _emit(
       DownloadProgress(
@@ -137,19 +142,29 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
   Future<void> _run(_HttpDownloadJob job) async {
     if (job.cancelRequested) return;
 
-    final partialPath = '${job.request.destinationPath}.partial';
-    final partial = File(partialPath);
+    job.runCycle ??= Completer<void>();
+    try {
+      await _runDownload(job);
+    } finally {
+      job.runCycle?.complete();
+      job.runCycle = null;
+    }
+  }
+
+  Future<void> _runDownload(_HttpDownloadJob job) async {
     final destination = File(job.request.destinationPath);
+    final storage = PartialStoragePaths.forDestination(destination.path);
+    final partialPath = storage.partialPath;
+    final partial = File(partialPath);
     final validatorStore = ResumeValidatorStore(
       partialPath,
       partialFileIo: _partialFileIo,
     );
-    final parent = destination.parent;
 
     _pathGuard.sanitizeAllForJob(
       destinationPath: destination.path,
       partialPath: partialPath,
-      metaPath: '$partialPath.meta',
+      metaPath: storage.metaPath,
     );
 
     job.status = DownloadStatus.downloading;
@@ -162,7 +177,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     final startedAt = DateTime.now();
 
     try {
-      ensurePrivateDownloadDirectory(parent.path);
+      ensurePrivatePartialStorage(destination.path);
       await _downloadBody(job, client, partial, validatorStore, startedAt);
 
       if (job.cancelRequested) {
@@ -171,7 +186,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       }
 
       final expected = job.request.expectedBytes;
-      if (expected != null && partial.lengthSync() != expected) {
+      if (expected != null && job.downloadedBytes != expected) {
         await _discardPartial(partial, validatorStore);
         job.status = DownloadStatus.failed;
         job.failure = const DownloadFailure(
@@ -186,8 +201,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       _emit(job.snapshot());
 
       final expectedSha256 = job.request.expectedSha256;
-      if (expectedSha256 != null &&
-          !await fileMatchesSha256Hex(partial, expectedSha256)) {
+      final shaOk = expectedSha256 == null
+          ? true
+          : await fileMatchesSha256Hex(partial, expectedSha256);
+      if (expectedSha256 != null && !shaOk) {
         await _discardPartial(partial, validatorStore);
         job.status = DownloadStatus.failed;
         job.failure = const DownloadFailure(
@@ -197,7 +214,6 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         _emit(job.snapshot());
         return;
       }
-
       final hook = _onBeforeCommitPartial;
       var runBeforeCommitHook = false;
       assert(() {
@@ -208,7 +224,13 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         await hook!(partial, destination);
       }
 
-      await _commitPartialFile(partial, destination, validatorStore);
+      await _commitPartialFile(
+        partial,
+        destination,
+        validatorStore,
+        job.request,
+      );
+      tryRemoveEmptyPartialStorageDirectory(destination.path);
 
       job.status = DownloadStatus.completed;
       job.downloadedBytes = destination.lengthSync();
@@ -248,7 +270,12 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         metaPath: '${partial.path}.meta',
       );
 
-      var resumeOffset = _pathGuard.reusablePartialBytes(partial.path);
+      final storedOffset = await validatorStore.readResumeByteOffsetFor(
+        job.request,
+      );
+      var resumeOffset = storedOffset != null && storedOffset > 0
+          ? storedOffset
+          : _pathGuard.reusablePartialBytes(partial.path);
       job.downloadedBytes = resumeOffset;
 
       final hasShaPin = job.request.expectedSha256 != null;
@@ -268,7 +295,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       }
 
       final outgoing = await client.getUrl(job.request.source);
-      outgoing.followRedirects = true;
+      outgoing.followRedirects = !maySendRange;
       outgoing.maxRedirects = 8;
       for (final entry in job.request.headers.entries) {
         outgoing.headers.set(entry.key, entry.value);
@@ -276,8 +303,8 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       if (maySendRange) {
         outgoing.headers.set(HttpHeaders.rangeHeader, 'bytes=$resumeOffset-');
         await applyIfRangeFromStore(outgoing, validatorStore, job.request);
+        outgoing.headers.set(HttpHeaders.connectionHeader, 'close');
       }
-
       final response = await outgoing.close();
       _recordResumeCapability(job, response);
 
@@ -318,7 +345,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
             range: parsedRange,
             resumeOffset: resumeOffset,
             expectedBytes: job.request.expectedBytes,
-            responseContentLength: _normalizedContentLength(response),
+            responseContentLength: _expectedResponseBodyBytes(
+              response,
+              parsedRange,
+            ),
           );
 
       if (resumeOffset > 0 && !append) {
@@ -382,9 +412,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         request: job.request,
         partialIdentity: writer.identity,
       );
-      if (!doAppend) {
-        await validatorStore.attachPartialIdentity(writer.identity);
-      }
+      await validatorStore.attachPartialIdentity(
+        writer.identity,
+        request: job.request,
+      );
 
       var bytesReceived = 0;
       var writerClosed = false;
@@ -397,6 +428,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       try {
         await for (final chunk in response.timeout(_idleReadTimeout)) {
           if (job.cancelRequested) {
+            await validatorStore.persistResumeByteOffset(
+              job.downloadedBytes,
+              request: job.request,
+            );
             await closeWriter();
             await _partialFileIo.syncFile(partial.path);
             return;
@@ -415,12 +450,31 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         await closeWriter();
         await _partialFileIo.syncFile(partial.path);
         throw HttpException('HTTP idle read timeout');
-      } finally {
+      } on Object {
+        if (job.cancelRequested) {
+          await validatorStore.persistResumeByteOffset(
+            job.downloadedBytes,
+            request: job.request,
+          );
+          await closeWriter();
+          await _partialFileIo.syncFile(partial.path);
+          return;
+        }
         await closeWriter();
+        rethrow;
       }
 
-      final declaredLength = _normalizedContentLength(response);
+      await closeWriter();
+
+      final declaredLength = _expectedResponseBodyBytes(response, parsedRange);
       if (declaredLength != null && bytesReceived != declaredLength) {
+        if (bytesReceived > 0) {
+          await validatorStore.persistResumeByteOffset(
+            resumeOffset + bytesReceived,
+            request: job.request,
+          );
+          await _partialFileIo.syncFile(partial.path);
+        }
         throw HttpException(
           'Incomplete HTTP body ($bytesReceived/$declaredLength bytes)',
         );
@@ -432,7 +486,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
             range: parsedRange,
             resumeOffset: resumeOffset,
             expectedBytes: job.request.expectedBytes,
-            responseContentLength: _normalizedContentLength(response),
+            responseContentLength: _expectedResponseBodyBytes(
+              response,
+              parsedRange,
+            ),
             bytesReceived: bytesReceived,
           )) {
         _partialFileIo.unlinkPartialEntry(partial.path);
@@ -457,10 +514,20 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
   }
 
   Future<void> _persistPartialProgress(_HttpDownloadJob job) async {
-    final partialPath = '${job.request.destinationPath}.partial';
+    final partialPath =
+        PartialStoragePaths.forDestination(job.request.destinationPath)
+            .partialPath;
     final inspection = _partialFileIo.inspectPath(partialPath);
     if (!inspection.isSafeRegularFileOwnedByUs) return;
-    if (File(partialPath).lengthSync() == 0) return;
+    if (job.downloadedBytes == 0) return;
+    final validatorStore = ResumeValidatorStore(
+      partialPath,
+      partialFileIo: _partialFileIo,
+    );
+    await validatorStore.persistResumeByteOffset(
+              job.downloadedBytes,
+              request: job.request,
+            );
     await _partialFileIo.syncFile(partialPath);
   }
 
@@ -468,6 +535,18 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     final length = response.contentLength;
     if (length < 0) return null;
     return length;
+  }
+
+  /// Bytes expected for this response body (206 uses Content-Range segment).
+  int? _expectedResponseBodyBytes(
+    HttpClientResponse response,
+    ContentRangeSpec? parsedRange,
+  ) {
+    if (response.statusCode == HttpStatus.partialContent &&
+        parsedRange != null) {
+      return parsedRange.segmentLength;
+    }
+    return _normalizedContentLength(response);
   }
 
   void _recordResumeCapability(_HttpDownloadJob job, HttpClientResponse response) {
@@ -503,10 +582,30 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     File partial,
     File destination,
     ResumeValidatorStore validatorStore,
+    DownloadArtifactRequest request,
   ) async {
     _pathGuard.requireSafeRegularPartialBeforeCommit(partial.path);
     _partialFileIo.prepareDestinationForCommit(destination.path);
-    await _partialFileIo.syncFile(partial.path);
+    PartialFileIdentity? storedIdentity;
+    if (Platform.isLinux || Platform.isMacOS) {
+      storedIdentity = await validatorStore.readPartialIdentityFor(request);
+      if (storedIdentity == null) {
+        throw FileSystemException(
+          'Missing stored partial identity for commit',
+          partial.path,
+        );
+      }
+    }
+    await _partialFileIo.syncFile(
+      partial.path,
+      expectedIdentityAtReopen: storedIdentity,
+    );
+    if (Platform.isLinux || Platform.isMacOS) {
+      posixFchmodAndSyncBeforeRename(
+        partial.path,
+        expectedIdentity: storedIdentity!,
+      );
+    }
     await _partialFileIo.syncDirectory(destination.parent.path);
     await partial.rename(destination.path);
     await _partialFileIo.syncDirectory(destination.parent.path);
@@ -549,6 +648,7 @@ class _HttpDownloadJob {
   HttpClient? client;
   bool serverAdvertisedResume = false;
   int partialOpenFailures = 0;
+  Completer<void>? runCycle;
 
   DownloadProgress queued() => DownloadProgress(
     artifactId: request.artifactId,

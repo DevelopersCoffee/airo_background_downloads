@@ -225,7 +225,12 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         await hook!(partial, destination);
       }
 
-      await _commitPartialFile(partial, destination, validatorStore);
+      await _commitPartialFile(
+        partial,
+        destination,
+        validatorStore,
+        job.request,
+      );
       tryRemoveEmptyPartialStorageDirectory(destination.path);
 
       job.status = DownloadStatus.completed;
@@ -408,9 +413,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         request: job.request,
         partialIdentity: writer.identity,
       );
-      if (!doAppend) {
-        await validatorStore.attachPartialIdentity(writer.identity);
-      }
+      await validatorStore.attachPartialIdentity(
+        writer.identity,
+        request: job.request,
+      );
 
       var bytesReceived = 0;
       var writerClosed = false;
@@ -577,18 +583,28 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     File partial,
     File destination,
     ResumeValidatorStore validatorStore,
+    DownloadArtifactRequest request,
   ) async {
     _pathGuard.requireSafeRegularPartialBeforeCommit(partial.path);
     _partialFileIo.prepareDestinationForCommit(destination.path);
-    PartialFileIdentity? partialIdentity;
+    PartialFileIdentity? storedIdentity;
     if (Platform.isLinux || Platform.isMacOS) {
-      partialIdentity = platformLstat(partial.path);
+      storedIdentity = await validatorStore.readPartialIdentityFor(request);
+      if (storedIdentity == null) {
+        throw FileSystemException(
+          'Missing stored partial identity for commit',
+          partial.path,
+        );
+      }
     }
-    await _partialFileIo.syncFile(partial.path);
+    await _partialFileIo.syncFile(
+      partial.path,
+      expectedIdentityAtReopen: storedIdentity,
+    );
     if (Platform.isLinux || Platform.isMacOS) {
       posixFchmodAndSyncBeforeRename(
         partial.path,
-        expectedIdentity: partialIdentity,
+        expectedIdentity: storedIdentity!,
       );
     }
     await _partialFileIo.syncDirectory(destination.parent.path);

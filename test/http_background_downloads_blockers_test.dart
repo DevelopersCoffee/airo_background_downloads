@@ -937,14 +937,20 @@ class _ThrowingSyncPartialFileIo implements PartialFileIo {
       _delegate.prepareDestinationForCommit(destinationPath);
 
   @override
-  Future<void> syncFile(String path) async {
+  Future<void> syncFile(
+    String path, {
+    expectedIdentityAtReopen,
+  }) async {
     if (path.endsWith('.partial')) {
       _partialSyncCount += 1;
       if (_partialSyncCount >= 2) {
         throw StateError('simulated fsync failure');
       }
     }
-    return _delegate.syncFile(path);
+    return _delegate.syncFile(
+      path,
+      expectedIdentityAtReopen: expectedIdentityAtReopen,
+    );
   }
 
   @override

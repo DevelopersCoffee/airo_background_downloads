@@ -73,18 +73,23 @@ class ResumeValidatorStore {
     return record.partialIdentity;
   }
 
-  Future<void> attachPartialIdentity(PartialFileIdentity identity) async {
+  Future<void> attachPartialIdentity(
+    PartialFileIdentity identity, {
+    required DownloadArtifactRequest request,
+  }) async {
     final existing = await _readRecord();
-    if (existing == null) return;
+    if (existing != null && !_recordMatchesRequest(existing, request)) {
+      return;
+    }
     await _writeRecord(
       _ResumeRecord(
-        source: existing.source,
-        expectedBytes: existing.expectedBytes,
-        expectedSha256: existing.expectedSha256,
-        strongEtag: existing.strongEtag,
-        lastModified: existing.lastModified,
+        source: request.source.toString(),
+        expectedBytes: request.expectedBytes,
+        expectedSha256: request.expectedSha256,
+        strongEtag: existing?.strongEtag,
+        lastModified: existing?.lastModified,
         partialIdentity: identity,
-        resumeByteOffset: existing.resumeByteOffset,
+        resumeByteOffset: existing?.resumeByteOffset,
       ),
     );
   }

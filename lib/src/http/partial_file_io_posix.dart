@@ -110,14 +110,17 @@ base class PosixPartialFileIo implements PartialFileIo {
   }
 
   @override
-  Future<void> syncFile(String path) async {
+  Future<void> syncFile(
+    String path, {
+    PartialFileIdentity? expectedIdentityAtReopen,
+  }) async {
     if (!File(path).existsSync()) {
       throw FileSystemException('Cannot fsync missing file', path);
     }
     if (Platform.isMacOS) {
       posixSyncRegularFileViaFd(
         path,
-        expectedIdentity: platformLstat(path),
+        expectedIdentity: expectedIdentityAtReopen,
       );
       return;
     }

@@ -2,6 +2,7 @@ import 'dart:ffi';
 import 'dart:io';
 
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart';
 
 import 'partial_file_identity.dart';
 import 'partial_file_stat.dart';
@@ -59,7 +60,18 @@ int posixMkdir(String path, int mode) {
 /// Darwin `fcntl(F_FULLFSYNC)` — flush buffers and force on-storage durability.
 const darwinFullFsyncCmd = 51;
 
-int posixDarwinFullFsync(int fd) => posixFcntl(fd, darwinFullFsyncCmd);
+int? _cachedProcessUmask;
+
+@visibleForTesting
+int Function(int fd)? darwinFullFsyncOverrideForTest;
+
+int posixDarwinFullFsync(int fd) {
+  final override = darwinFullFsyncOverrideForTest;
+  if (override != null) {
+    return override(fd);
+  }
+  return posixFcntl(fd, darwinFullFsyncCmd);
+}
 
 int posixFchmod(int fd, int mode) {
   final fchmodFn = posixLib().lookupFunction<
@@ -68,19 +80,38 @@ int posixFchmod(int fd, int mode) {
   return fchmodFn(fd, mode);
 }
 
-/// Current process umask without permanently changing it.
+/// Process umask, cached after first read (Linux: `/proc/self/status`).
 int posixCurrentUmask() {
+  final cached = _cachedProcessUmask;
+  if (cached != null) {
+    return cached;
+  }
+  if (Platform.isLinux) {
+    try {
+      for (final line in File('/proc/self/status').readAsLinesSync()) {
+        if (!line.startsWith('Umask:')) continue;
+        final parts = line.split(RegExp(r'\s+'));
+        if (parts.length >= 2) {
+          _cachedProcessUmask = int.parse(parts[1], radix: 8) & 511;
+          return _cachedProcessUmask!;
+        }
+      }
+    } on Object {
+      // Fall through to libc umask probe.
+    }
+  }
   final umaskFn = posixLib().lookupFunction<
       Int32 Function(Int32),
       int Function(int)>('umask');
   final previous = umaskFn(0);
   umaskFn(previous);
-  return previous & 511; // 0777
+  _cachedProcessUmask = previous & 511;
+  return _cachedProcessUmask!;
 }
 
 /// Mode for committed regular files: `0666 & ~umask`.
 int posixCommittedRegularFileMode() =>
-    (438 & ~posixCurrentUmask()) & 511; // 0666 & ~umask & 0777
+    (438 & ~posixCurrentUmask()) & 511;
 
 void _posixCloseChecked(int fd, String path) {
   final closeFn = posixLib().lookupFunction<
@@ -91,14 +122,39 @@ void _posixCloseChecked(int fd, String path) {
   }
 }
 
-void _verifyReopenedIdentity(int fd, String path, PartialFileIdentity? expected) {
-  if (expected == null) return;
+void _verifyReopenedIdentity(
+  int fd,
+  String path,
+  PartialFileIdentity expected,
+) {
   final stat = platformFstat(fd);
   if (stat == null || !expected.matches(stat)) {
     throw FileSystemException(
       'Partial file identity changed after reopen',
       path,
     );
+  }
+}
+
+void _runWithCheckedClose(int fd, String path, void Function() action) {
+  Object? actionError;
+  StackTrace? actionStack;
+  try {
+    action();
+  } on Object catch (error, stack) {
+    actionError = error;
+    actionStack = stack;
+  } finally {
+    try {
+      _posixCloseChecked(fd, path);
+    } on Object catch (closeError, closeStack) {
+      if (actionError == null) {
+        Error.throwWithStackTrace(closeError, closeStack);
+      }
+    }
+  }
+  if (actionError != null) {
+    Error.throwWithStackTrace(actionError!, actionStack!);
   }
 }
 
@@ -140,19 +196,19 @@ void posixSyncRegularFileViaFd(
   if (fd < 0) {
     throw FileSystemException('Cannot open file for sync', path);
   }
-  try {
-    _verifyReopenedIdentity(fd, path, expectedIdentity);
+  _runWithCheckedClose(fd, path, () {
+    if (expectedIdentity != null) {
+      _verifyReopenedIdentity(fd, path, expectedIdentity);
+    }
     _syncOpenFd(fd, path);
-  } finally {
-    _posixCloseChecked(fd, path);
-  }
+  });
 }
 
 /// Before rename: `fchmod(mode)` on the fd, then fsync / F_FULLFSYNC.
 void posixFchmodAndSyncBeforeRename(
   String path, {
   int? mode,
-  PartialFileIdentity? expectedIdentity,
+  required PartialFileIdentity expectedIdentity,
 }) {
   if (!Platform.isLinux && !Platform.isMacOS) {
     return;
@@ -162,13 +218,11 @@ void posixFchmodAndSyncBeforeRename(
   if (fd < 0) {
     throw FileSystemException('Cannot open partial for fchmod before rename', path);
   }
-  try {
+  _runWithCheckedClose(fd, path, () {
     _verifyReopenedIdentity(fd, path, expectedIdentity);
     if (posixFchmod(fd, commitMode) != 0) {
       throw FileSystemException('fchmod failed before rename', path);
     }
     _syncOpenFd(fd, path);
-  } finally {
-    _posixCloseChecked(fd, path);
-  }
+  });
 }

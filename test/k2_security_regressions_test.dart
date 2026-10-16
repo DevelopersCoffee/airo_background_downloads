@@ -273,7 +273,10 @@ class _FakePartialFileIo implements PartialFileIo {
   void prepareDestinationForCommit(String destinationPath) {}
 
   @override
-  Future<void> syncFile(String path) async {}
+  Future<void> syncFile(
+    String path, {
+    expectedIdentityAtReopen,
+  }) async {}
 
   @override
   Future<void> syncDirectory(String directoryPath) async {}

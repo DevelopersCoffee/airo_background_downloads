@@ -14,7 +14,10 @@ abstract class PartialFileIo {
 
   void prepareDestinationForCommit(String destinationPath);
 
-  Future<void> syncFile(String path);
+  Future<void> syncFile(
+    String path, {
+    PartialFileIdentity? expectedIdentityAtReopen,
+  });
 
   /// POSIX: directory fsync via open(O_RDONLY)/fsync.
   ///

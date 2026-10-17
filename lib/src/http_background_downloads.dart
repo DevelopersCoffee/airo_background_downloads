@@ -33,7 +33,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     if (Platform.isAndroid || Platform.isIOS) {
       throw UnsupportedError(
         'HttpBackgroundDownloads is desktop-only (Linux, macOS, Windows). '
-        'On Android and iOS use BackgroundDownloads.platform() for native engines.',
+        'On Android and iOS use createBackgroundDownloads() for native engines.',
       );
     }
   }

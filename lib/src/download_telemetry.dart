@@ -22,7 +22,12 @@ class AiroDownloadTelemetrySnapshot {
   final Map<DownloadFailureCode, int> failureCodeCounts;
   final int retryAttemptsCount;
 
-  /// Diagnostic map export for analytics logging.
+  /// Plain map of these counters for local diagnostics (for example a debug
+  /// screen or a log line the app writes itself).
+  ///
+  /// The package never sends this map, or anything else from
+  /// [AiroDownloadTelemetryLogger], off the device. Sending it anywhere is
+  /// the app's choice.
   Map<String, dynamic> toMap() {
     return {
       'totalInitiated': totalInitiated,
@@ -40,6 +45,9 @@ class AiroDownloadTelemetrySnapshot {
 }
 
 /// Logger tracking download success, failure, speed, and retry telemetry.
+///
+/// Counters live in memory only: nothing is written to disk or sent over the
+/// network, and they reset when the process ends or [reset] is called.
 class AiroDownloadTelemetryLogger {
   int _initiatedCount = 0;
   int _completedCount = 0;

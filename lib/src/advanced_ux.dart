@@ -1,6 +1,12 @@
 import 'download_models.dart';
 
-/// Configuration for persistent native notification controls.
+/// App-side settings for a download notification the app draws itself.
+///
+/// This class is Dart-only. It is not sent to the Android or iOS engine and
+/// does not change the Android foreground-service notification, which always
+/// shows the request's `displayName` (or the artifact id), "Downloading N%"
+/// and a progress bar, with no action buttons. See the README section
+/// "Notifications".
 class DownloadNotificationConfig {
   const DownloadNotificationConfig({
     required this.titlePattern,
@@ -15,7 +21,10 @@ class DownloadNotificationConfig {
   final bool enableCancelAction;
 }
 
-/// Controller for binding download events to persistent notifications.
+/// Tracks which downloads an app-drawn notification should show.
+///
+/// It keeps state in memory and posts nothing itself; [onNotificationAction]
+/// is never called by the package.
 class AiroDownloadNotificationController {
   AiroDownloadNotificationController({
     required this.config,

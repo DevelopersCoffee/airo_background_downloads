@@ -2,7 +2,11 @@
 
 ## 1.2.1
 
-- **Desktop-only HTTP**: `HttpBackgroundDownloads` throws on Android/iOS; use `BackgroundDownloads.platform()` for native engines.
+- **Docs (Android / Google Play)**: README sections on the Google Play data sync foreground service declaration (component, start/stop, ready-to-paste Play Console answers, required `SystemForegroundService` manifest entry for Android 14+, Android 15 six-hour limit), notifications and Android 13+ `POST_NOTIFICATIONS`, privacy and telemetry, removing the foreground service permission, large files and resume, and a Known gaps list.
+- **Docs**: `AiroDownloadTelemetrySnapshot.toMap()` is documented as local diagnostics that the package never sends (it previously said "for analytics logging"). `DownloadNotificationConfig` and `AiroDownloadNotificationController` are documented as Dart-only helpers that do not change the native notification.
+- **Docs**: The desktop-only error message and README now name `createBackgroundDownloads()`; `BackgroundDownloads.platform()` does not exist.
+- **Tests**: `telemetry_stays_local_test.dart` (no analytics or HTTP dependency, telemetry imports only models) and `redirect_resume_test.dart` (desktop redirect behaviour on fresh download and on resume).
+- **Desktop-only HTTP**: `HttpBackgroundDownloads` throws on Android/iOS; use `createBackgroundDownloads()` for native engines.
 - **Download size**: No implicit 8 GiB cap — set `expectedBytes` and/or `maxDownloadBytes` to bound downloads.
 - **POSIX variadic FFI**: `open(2)` and `fcntl(2)` use Dart `VarArgs` bindings so `O_CREAT` mode `0600` is correct on Apple arm64 (fixes macOS partial permission workarounds).
 - **Resume protocol (F1)**: No macOS-only append of `200 OK` or synthetic `206` without `Content-Range`; `200` to a `Range` request always restarts from byte 0.

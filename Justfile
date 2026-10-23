@@ -27,7 +27,6 @@ matrix:
     case "$(uname -s)" in
       Linux|Darwin)
         ./tool/revert_matrix.sh
-        git checkout -- .
         ;;
       *)
         echo "skip revert matrix on $(uname -s) (run on Linux or macOS)"
@@ -47,7 +46,7 @@ publish-dry:
 
 # Requires: dart pub token add https://pub.dev  (upload token for this package)
 publish:
-    flutter pub publish --force
+    flutter pub publish
 
 verify-pub version="1.2.1":
     #!/usr/bin/env bash

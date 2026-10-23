@@ -14,6 +14,7 @@ import 'http/posix_variadic.dart';
 import 'http/partial_path_guard.dart';
 import 'http/resume_policy.dart';
 import 'http/resume_validator_store.dart';
+import 'http/secure_http_fetch.dart';
 import 'processors/streaming_checksum.dart';
 
 const Duration _defaultConnectionTimeout = Duration(seconds: 30);
@@ -294,18 +295,19 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         job.downloadedBytes = 0;
       }
 
-      final outgoing = await client.getUrl(job.request.source);
-      outgoing.followRedirects = !maySendRange;
-      outgoing.maxRedirects = 8;
-      for (final entry in job.request.headers.entries) {
-        outgoing.headers.set(entry.key, entry.value);
-      }
-      if (maySendRange) {
-        outgoing.headers.set(HttpHeaders.rangeHeader, 'bytes=$resumeOffset-');
-        await applyIfRangeFromStore(outgoing, validatorStore, job.request);
-        outgoing.headers.set(HttpHeaders.connectionHeader, 'close');
-      }
-      final response = await outgoing.close();
+      final response = await openSecureHttpGet(
+        client: client,
+        originalSource: job.request.source,
+        requestHeaders: job.request.headers,
+        followSecureRedirects: !maySendRange,
+        configureRequest: (outgoing) async {
+          if (maySendRange) {
+            outgoing.headers.set(HttpHeaders.rangeHeader, 'bytes=$resumeOffset-');
+            await applyIfRangeFromStore(outgoing, validatorStore, job.request);
+            outgoing.headers.set(HttpHeaders.connectionHeader, 'close');
+          }
+        },
+      );
       _recordResumeCapability(job, response);
 
       if (response.statusCode == 401 || response.statusCode == 403) {
@@ -389,6 +391,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       }
 
       late final PartialFileWriter writer;
+      PartialFileIdentity? activePartialIdentity;
       try {
         writer = await _partialFileIo.openVerifiedPartialWriter(
           partial.path,
@@ -416,6 +419,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         writer.identity,
         request: job.request,
       );
+      activePartialIdentity = writer.identity;
 
       var bytesReceived = 0;
       var writerClosed = false;
@@ -433,7 +437,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
               request: job.request,
             );
             await closeWriter();
-            await _partialFileIo.syncFile(partial.path);
+            await _partialFileIo.syncFile(
+              partial.path,
+              expectedIdentityAtReopen: activePartialIdentity,
+            );
             return;
           }
           _enforceSizeCap(resumeOffset + bytesReceived + chunk.length, job);
@@ -448,7 +455,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         }
       } on TimeoutException {
         await closeWriter();
-        await _partialFileIo.syncFile(partial.path);
+        await _partialFileIo.syncFile(
+          partial.path,
+          expectedIdentityAtReopen: activePartialIdentity,
+        );
         throw HttpException('HTTP idle read timeout');
       } on Object {
         if (job.cancelRequested) {
@@ -457,7 +467,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
             request: job.request,
           );
           await closeWriter();
-          await _partialFileIo.syncFile(partial.path);
+          await _partialFileIo.syncFile(
+            partial.path,
+            expectedIdentityAtReopen: activePartialIdentity,
+          );
           return;
         }
         await closeWriter();
@@ -473,7 +486,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
             resumeOffset + bytesReceived,
             request: job.request,
           );
-          await _partialFileIo.syncFile(partial.path);
+          await _partialFileIo.syncFile(
+            partial.path,
+            expectedIdentityAtReopen: activePartialIdentity,
+          );
         }
         throw HttpException(
           'Incomplete HTTP body ($bytesReceived/$declaredLength bytes)',
@@ -498,7 +514,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         continue;
       }
 
-      await _partialFileIo.syncFile(partial.path);
+      await _partialFileIo.syncFile(
+        partial.path,
+        expectedIdentityAtReopen: activePartialIdentity,
+      );
       return;
     }
   }
@@ -528,7 +547,14 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
               job.downloadedBytes,
               request: job.request,
             );
-    await _partialFileIo.syncFile(partialPath);
+    PartialFileIdentity? storedIdentity;
+    if (Platform.isLinux || Platform.isMacOS) {
+      storedIdentity = await validatorStore.readPartialIdentityFor(job.request);
+    }
+    await _partialFileIo.syncFile(
+      partialPath,
+      expectedIdentityAtReopen: storedIdentity,
+    );
   }
 
   int? _normalizedContentLength(HttpClientResponse response) {

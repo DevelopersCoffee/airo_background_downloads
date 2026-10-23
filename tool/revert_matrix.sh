@@ -346,4 +346,97 @@ printf '%-22s' "G1 206 synth CR"
 expect_fail "G1 206 synth CR" lib/src/http_background_downloads.dart \
   test/http_background_downloads_blockers_test.dart "G1 206 without Content-Range refuses resume splice"
 
+# 19) HTTPS→HTTP redirect must be refused
+sed_inplace 's/if (target.scheme.toLowerCase() != '\''https'\'')/if (false)/' \
+  lib/src/http/secure_http_fetch.dart
+printf '%-22s' "redirect downgrade"
+expect_fail "redirect downgrade" lib/src/http/secure_http_fetch.dart \
+  test/http_redirect_and_commit_security_test.dart \
+  "K2 HTTPS to HTTP redirect is refused and destination is not committed"
+
+# 20) Custom headers only on original origin
+sed_inplace 's/if (httpSameOrigin(current, originalSource))/if (true)/' \
+  lib/src/http/secure_http_fetch.dart
+printf '%-22s' "redirect headers"
+expect_fail "redirect headers" lib/src/http/secure_http_fetch.dart \
+  test/http_redirect_and_commit_security_test.dart \
+  "K2 cross-host HTTPS redirect never sends X-Api-Key to CDN"
+
+# 21) Stored partial identity at commit (not fresh lstat only)
+python3 - <<'PY'
+from pathlib import Path
+p = Path("lib/src/http_background_downloads.dart")
+text = p.read_text()
+old = """    PartialFileIdentity? storedIdentity;
+    if (Platform.isLinux || Platform.isMacOS) {
+      storedIdentity = await validatorStore.readPartialIdentityFor(request);
+      if (storedIdentity == null) {
+        throw FileSystemException(
+          'Missing stored partial identity for commit',
+          partial.path,
+        );
+      }
+    }
+    await _partialFileIo.syncFile(
+      partial.path,
+      expectedIdentityAtReopen: storedIdentity,
+    );
+    if (Platform.isLinux || Platform.isMacOS) {
+      posixFchmodAndSyncBeforeRename(
+        partial.path,
+        expectedIdentity: storedIdentity!,
+      );
+    }"""
+new = """    await _partialFileIo.syncFile(partial.path);
+    if (Platform.isLinux || Platform.isMacOS) {
+      final inspection = _partialFileIo.inspectPath(partial.path);
+      final fresh = inspection.identity;
+      if (fresh != null) {
+        posixFchmodAndSyncBeforeRename(
+          partial.path,
+          expectedIdentity: fresh,
+        );
+      }
+    }"""
+if old not in text:
+    raise SystemExit("revert_matrix: commit identity anchor not found")
+p.write_text(text.replace(old, new, 1))
+PY
+printf '%-22s' "commit identity"
+expect_fail "commit identity" lib/src/http_background_downloads.dart \
+  test/http_redirect_and_commit_security_test.dart \
+  "K2 swap before commit refuses attacker bytes despite SHA pin"
+
+# 22) Close error must not mask action failure
+sed_inplace 's/if (actionError == null)/if (true)/' lib/src/http/posix_variadic.dart
+printf '%-22s' "close error mask"
+expect_fail "close error mask" lib/src/http/posix_variadic.dart \
+  test/http_redirect_and_commit_security_test.dart \
+  "checked close keeps action error when close fails"
+
+# 23) umask probe (no libc umask mutation on macOS / Linux fallback)
+python3 - <<'PY'
+from pathlib import Path
+p = Path("lib/src/http/posix_variadic.dart")
+text = p.read_text()
+old = "  _cachedProcessUmask = _probeProcessUmaskViaExclusiveCreate();"
+new = """  final umaskFn = posixLib().lookupFunction<
+      Int32 Function(Int32),
+      int Function(int)>('umask');
+  final previous = umaskFn(0);
+  umaskFn(previous);
+  _cachedProcessUmask = previous & 511;"""
+if old not in text:
+    raise SystemExit("revert_matrix: umask probe anchor not found")
+p.write_text(text.replace(old, new, 1))
+PY
+if $IS_MAC; then
+  printf '%-22s' "umask probe"
+  expect_fail "umask probe" lib/src/http/posix_variadic.dart \
+    test/http_redirect_and_commit_security_test.dart \
+    "posixCurrentUmask uses exclusive-create probe on macOS"
+else
+  skip_row "umask probe"
+fi
+
 echo "Done."

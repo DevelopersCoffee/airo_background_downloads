@@ -536,6 +536,12 @@ old_acquire = "    acquirePartialStorageLease(destination.path);\n\n    try {"
 if old_acquire not in text:
     raise SystemExit("revert_matrix: partial storage lease acquire anchor not found")
 text = text.replace(old_acquire, "    try {", 1)
+if "partial_storage_cleanup.dart" not in text:
+    text = text.replace(
+        "import 'http/partial_storage_lease.dart';",
+        "import 'http/partial_storage_cleanup.dart';\nimport 'http/partial_storage_lease.dart';",
+        1,
+    )
 old_finally = """    } finally {
       releasePartialStorageLeaseAndMaybeCleanup(destination.path);
       client.close(force: true);"""

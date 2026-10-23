@@ -29,6 +29,20 @@ Partial downloads and `.meta` sidecars live under a dedicated **`.airo_partials/
 
 ---
 
+## Local CI / publish (Just)
+
+When GitHub Actions is unavailable, run the same checks locally with [just](https://github.com/casey/just):
+
+```bash
+just              # pub get, analyze, test, revert matrix (Linux/macOS)
+just ci-core      # analyze + test only (e.g. Windows)
+just publish-dry  # validate before pub.dev
+just publish      # upload (after `dart pub token add https://pub.dev`)
+just verify-pub version=1.2.1
+```
+
+---
+
 ## Installation
 
 ```yaml

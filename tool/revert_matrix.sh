@@ -3,6 +3,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+restore_worktree() {
+  git checkout -- . >/dev/null 2>&1 || true
+}
+
+trap restore_worktree EXIT INT TERM
+
 fail() { echo "MATRIX ERROR: $*" >&2; exit 1; }
 
 run_test() {
@@ -47,6 +53,8 @@ echo "Revert-proof"
 
 if ! $IS_LINUX && ! $IS_MAC; then
   echo "Non-POSIX host: only path-level rows are not run here."
+  restore_worktree
+  git diff --exit-code
   exit 0
 fi
 
@@ -415,7 +423,8 @@ expect_fail "close error mask" lib/src/http/posix_variadic.dart \
   "checked close keeps action error when close fails"
 
 # 23) umask probe (no libc umask mutation on macOS / Linux fallback)
-python3 - <<'PY'
+if $IS_MAC; then
+  python3 - <<'PY'
 from pathlib import Path
 p = Path("lib/src/http/posix_variadic.dart")
 text = p.read_text()
@@ -430,7 +439,6 @@ if old not in text:
     raise SystemExit("revert_matrix: umask probe anchor not found")
 p.write_text(text.replace(old, new, 1))
 PY
-if $IS_MAC; then
   printf '%-22s' "umask probe"
   expect_fail "umask probe" lib/src/http/posix_variadic.dart \
     test/http_redirect_and_commit_security_test.dart \
@@ -440,3 +448,5 @@ else
 fi
 
 echo "Done."
+restore_worktree
+git diff --exit-code

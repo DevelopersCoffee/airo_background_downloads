@@ -21,7 +21,7 @@ When using `HttpBackgroundDownloads`, there is **no default byte cap** on respon
 
 ### macOS coverage
 
-CI runs on **macOS arm64** (`macos-latest`). An optional **Intel macOS** (`macos-13`) job is **non-blocking** when runners are available. **Intel macOS support is not claimed** — behavior on Intel Macs is best-effort only until that job runs reliably. Darwin `stat` parsing uses `lstat$INODE64` / `fstat$INODE64` on 64-bit macOS (fail closed on Intel when those symbols are missing).
+CI runs on **macOS arm64** (`macos-latest`) only. **Intel macOS is not claimed** in this release (see CHANGELOG 1.2.1). Darwin `stat` parsing uses `lstat$INODE64` / `fstat$INODE64` on 64-bit macOS (fail closed when those symbols are missing).
 
 ### Partial file layout (desktop HTTP)
 

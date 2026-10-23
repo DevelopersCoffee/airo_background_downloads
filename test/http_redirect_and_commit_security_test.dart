@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:airo_background_downloads/airo_background_downloads.dart';
 import 'package:airo_background_downloads/src/http/partial_file_identity.dart';
+import 'package:airo_background_downloads/src/http/partial_storage_paths.dart';
 import 'package:airo_background_downloads/src/http/partial_file_stat.dart';
 import 'package:airo_background_downloads/src/http/posix_variadic.dart';
 import 'package:crypto/crypto.dart';
@@ -110,6 +111,12 @@ void main() {
     final terminal = await waitTerminal(downloads, 'https-downgrade');
     expect(terminal.status, DownloadStatus.failed);
     expect(destination.existsSync(), isFalse);
+    expect(
+      Directory(
+        PartialStoragePaths.forDestination(destination.path).storageDirectory,
+      ).existsSync(),
+      isFalse,
+    );
   });
 
   test('K2 cross-host HTTPS redirect never sends X-Api-Key to CDN', () async {
@@ -173,6 +180,188 @@ void main() {
     expect(terminal.status, DownloadStatus.completed);
     expect(cdnApiKey, isNull);
     expect(await destination.readAsBytes(), equals(payload));
+  });
+
+  test('K2 cross-host redirect never sends Authorization or Cookie to CDN', () async {
+    final payload = utf8.encode('cdn-auth-cookie-test');
+    final destination = File('${tempDir.path}/auth-cookie.bin');
+    String? cdnAuthorization;
+    String? cdnCookie;
+
+    final originServer = await HttpServer.bindSecure(
+      InternetAddress.loopbackIPv4,
+      0,
+      serverContext,
+    );
+    addTearDown(() async => originServer.close(force: true));
+
+    final cdnServer = await HttpServer.bindSecure(
+      InternetAddress.loopbackIPv4,
+      0,
+      serverContext,
+    );
+    addTearDown(() async => cdnServer.close(force: true));
+
+    final cdnBase = 'https://${cdnServer.address.host}:${cdnServer.port}';
+    cdnServer.listen((request) async {
+      cdnAuthorization = request.headers.value(HttpHeaders.authorizationHeader);
+      cdnCookie = request.headers.value(HttpHeaders.cookieHeader);
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..contentLength = payload.length
+        ..add(payload)
+        ..close();
+    });
+
+    final originBase =
+        'https://${originServer.address.host}:${originServer.port}';
+    originServer.listen((request) async {
+      request.response
+        ..statusCode = HttpStatus.found
+        ..headers.set(HttpHeaders.locationHeader, '$cdnBase/file.bin')
+        ..close();
+    });
+
+    final downloads = HttpBackgroundDownloads(clientFactory: testClient);
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'auth-cookie-leak',
+        source: Uri.parse('$originBase/resolve/file.bin'),
+        destinationPath: destination.path,
+        expectedBytes: payload.length,
+        headers: const {
+          'Authorization': 'Bearer secret-token',
+          'Cookie': 'session=abc123',
+        },
+      ),
+    );
+
+    final terminal = await waitTerminal(downloads, 'auth-cookie-leak');
+    expect(terminal.status, DownloadStatus.completed);
+    expect(cdnAuthorization, isNull);
+    expect(cdnCookie, isNull);
+  });
+
+  test('K2 refuses https to https to http redirect mid-chain', () async {
+    final destination = File('${tempDir.path}/mid-downgrade.bin');
+    final httpServer = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async => httpServer.close(force: true));
+    httpServer.listen((request) async {
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..contentLength = 4
+        ..add(utf8.encode('evil'))
+        ..close();
+    });
+
+    final hop2 = await HttpServer.bindSecure(
+      InternetAddress.loopbackIPv4,
+      0,
+      serverContext,
+    );
+    addTearDown(() async => hop2.close(force: true));
+    final hop2Base = 'https://${hop2.address.host}:${hop2.port}';
+    hop2.listen((request) async {
+      request.response
+        ..statusCode = HttpStatus.found
+        ..headers.set(
+          HttpHeaders.locationHeader,
+          'http://${httpServer.address.host}:${httpServer.port}/evil',
+        )
+        ..close();
+    });
+
+    final entry = await HttpServer.bindSecure(
+      InternetAddress.loopbackIPv4,
+      0,
+      serverContext,
+    );
+    addTearDown(() async => entry.close(force: true));
+    entry.listen((request) async {
+      request.response
+        ..statusCode = HttpStatus.found
+        ..headers.set(HttpHeaders.locationHeader, '$hop2Base/next')
+        ..close();
+    });
+
+    final downloads = HttpBackgroundDownloads(clientFactory: testClient);
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'mid-downgrade',
+        source: Uri.parse(
+          'https://${entry.address.host}:${entry.port}/entry',
+        ),
+        destinationPath: destination.path,
+      ),
+    );
+
+    final terminal = await waitTerminal(downloads, 'mid-downgrade');
+    expect(terminal.status, DownloadStatus.failed);
+    expect(destination.existsSync(), isFalse);
+  });
+
+  test('K2 redirect without Location header fails closed', () async {
+    final destination = File('${tempDir.path}/no-location.bin');
+    final server = await HttpServer.bindSecure(
+      InternetAddress.loopbackIPv4,
+      0,
+      serverContext,
+    );
+    addTearDown(() async => server.close(force: true));
+    server.listen((request) async {
+      request.response
+        ..statusCode = HttpStatus.found
+        ..close();
+    });
+
+    final downloads = HttpBackgroundDownloads(clientFactory: testClient);
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'no-location',
+        source: Uri.parse(
+          'https://${server.address.host}:${server.port}/entry',
+        ),
+        destinationPath: destination.path,
+      ),
+    );
+
+    final terminal = await waitTerminal(downloads, 'no-location');
+    expect(terminal.status, DownloadStatus.failed);
+  });
+
+  test('K2 redirect hop limit fails closed', () async {
+    final destination = File('${tempDir.path}/hop-limit.bin');
+    final server = await HttpServer.bindSecure(
+      InternetAddress.loopbackIPv4,
+      0,
+      serverContext,
+    );
+    addTearDown(() async => server.close(force: true));
+    final base = 'https://${server.address.host}:${server.port}';
+    server.listen((request) async {
+      final segment = request.uri.pathSegments;
+      final hop = segment.isEmpty ? 0 : int.tryParse(segment.last) ?? 0;
+      request.response
+        ..statusCode = HttpStatus.found
+        ..headers.set(HttpHeaders.locationHeader, '$base/${hop + 1}')
+        ..close();
+    });
+
+    final downloads = HttpBackgroundDownloads(clientFactory: testClient);
+    await downloads.enqueue(
+      DownloadArtifactRequest(
+        artifactId: 'hop-limit',
+        source: Uri.parse('$base/0'),
+        destinationPath: destination.path,
+      ),
+    );
+
+    final terminal = await waitTerminal(downloads, 'hop-limit');
+    expect(terminal.status, DownloadStatus.failed);
+    expect(
+      terminal.failure?.message,
+      contains('Too many HTTP redirects'),
+    );
   });
 
   test('K2 swap before commit refuses attacker bytes despite SHA pin', () async {

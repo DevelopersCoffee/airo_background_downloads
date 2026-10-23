@@ -243,6 +243,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         await _persistPartialProgress(job);
         return;
       }
+      tryRemoveEmptyPartialStorageDirectory(destination.path);
       job.status = DownloadStatus.failed;
       job.failure = DownloadFailure(
         code: DownloadFailureCode.transport,

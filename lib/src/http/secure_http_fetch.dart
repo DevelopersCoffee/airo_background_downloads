@@ -94,7 +94,7 @@ Future<HttpClientResponse> openSecureHttpGet({
     }
 
     final target = current.resolve(location);
-    if (false) {
+    if (target.scheme.toLowerCase() != 'https') {
       await _drainRedirectBody(response);
       throw HttpException(
         'Refusing redirect to non-HTTPS URL (${target.scheme})',

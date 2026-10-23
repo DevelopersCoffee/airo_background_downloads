@@ -113,7 +113,6 @@ int posixCurrentUmask() {
     }
   }
   _cachedProcessUmask = _probeProcessUmaskViaExclusiveCreate();
-  posixUmaskLastReadUsedExclusiveProbe = true;
   return _cachedProcessUmask!;
 }
 
@@ -141,6 +140,7 @@ int _probeProcessUmaskViaExclusiveCreate() {
       if (actualMode == null) {
         throw FileSystemException('umask probe mode read failed', path);
       }
+      posixUmaskLastReadUsedExclusiveProbe = true;
       return (requestedMode & ~actualMode) & 511;
     } finally {
       final closeFn = posixLib().lookupFunction<

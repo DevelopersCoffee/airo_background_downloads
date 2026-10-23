@@ -404,6 +404,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         if (job.partialOpenFailures > 4) {
           rethrow;
         }
+        await _drainResponse(response);
         _partialFileIo.unlinkPartialEntry(partial.path);
         validatorStore.deleteSync();
         job.downloadedBytes = 0;
@@ -486,10 +487,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
             resumeOffset + bytesReceived,
             request: job.request,
           );
-          await _partialFileIo.syncFile(
-            partial.path,
-            expectedIdentityAtReopen: activePartialIdentity,
-          );
+          await _partialFileIo.syncFile(partial.path);
         }
         throw HttpException(
           'Incomplete HTTP body ($bytesReceived/$declaredLength bytes)',
@@ -514,10 +512,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         continue;
       }
 
-      await _partialFileIo.syncFile(
-        partial.path,
-        expectedIdentityAtReopen: activePartialIdentity,
-      );
+      await _partialFileIo.syncFile(partial.path);
       return;
     }
   }

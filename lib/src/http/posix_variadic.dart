@@ -112,7 +112,12 @@ int posixCurrentUmask() {
       // Fall through to race-free probe file.
     }
   }
-  _cachedProcessUmask = _probeProcessUmaskViaExclusiveCreate();
+  final umaskFn = posixLib().lookupFunction<
+      Int32 Function(Int32),
+      int Function(int)>('umask');
+  final previous = umaskFn(0);
+  umaskFn(previous);
+  _cachedProcessUmask = previous & 511;
   posixUmaskLastReadUsedExclusiveProbe = true;
   return _cachedProcessUmask!;
 }

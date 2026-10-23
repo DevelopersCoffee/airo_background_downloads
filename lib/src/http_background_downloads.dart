@@ -9,6 +9,7 @@ import 'http/partial_file_identity.dart';
 import 'http/partial_file_io.dart';
 import 'http/download_directory_guard.dart';
 import 'http/partial_storage_cleanup.dart';
+import 'http/partial_storage_lease.dart';
 import 'http/partial_storage_paths.dart';
 import 'http/posix_variadic.dart';
 import 'http/partial_path_guard.dart';
@@ -58,6 +59,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
   @visibleForTesting
   Future<void> Function(File partial, File destination)?
   get onBeforeCommitPartial => _onBeforeCommitPartial;
+
+  /// Called after a successful HTTP response and immediately before partial open.
+  @visibleForTesting
+  Future<void> Function(String artifactId)? beforeOpenPartialWriterForTest;
 
   @override
   Stream<DownloadProgress> get events => _events.stream;
@@ -176,6 +181,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     client.userAgent = 'Airo/1.0 (platform_downloads; dart)';
     job.client = client;
     final startedAt = DateTime.now();
+    acquirePartialStorageLease(destination.path);
 
     try {
       ensurePrivatePartialStorage(destination.path);
@@ -237,7 +243,6 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       job.totalBytes = job.downloadedBytes;
       _emit(job.snapshot());
       _jobs.remove(job.request.artifactId);
-      tryRemoveEmptyPartialStorageDirectory(destination.path);
     } on Object catch (error) {
       if (job.cancelRequested) {
         await _persistPartialProgress(job);
@@ -249,8 +254,8 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         message: '$error',
       );
       _emit(job.snapshot());
-      tryRemoveEmptyPartialStorageDirectory(destination.path);
     } finally {
+      releasePartialStorageLeaseAndMaybeCleanup(destination.path);
       client.close(force: true);
       job.client = null;
     }
@@ -390,6 +395,12 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
           job.request,
         );
       }
+
+      final beforeOpen = beforeOpenPartialWriterForTest;
+      if (beforeOpen != null) {
+        await beforeOpen(job.request.artifactId);
+      }
+      ensurePrivatePartialStorage(job.request.destinationPath);
 
       late final PartialFileWriter writer;
       PartialFileIdentity? activePartialIdentity;

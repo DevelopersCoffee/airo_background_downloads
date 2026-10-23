@@ -20,7 +20,7 @@ void tryRemoveEmptyPartialStorageDirectory(String destinationPath) {
       return;
     }
     _removeEmptyPartialStorageDirectoryImpl(destinationPath);
-  } on Object {
+  } on FileSystemException {
     // Best effort — ignore AV locks, read-only parents, concurrent mkdir races, etc.
   }
 }

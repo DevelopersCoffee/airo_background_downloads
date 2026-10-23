@@ -505,7 +505,7 @@ old = """void tryRemoveEmptyPartialStorageDirectory(String destinationPath) {
       return;
     }
     _removeEmptyPartialStorageDirectoryImpl(destinationPath);
-  } on Object {
+  } on FileSystemException {
     // Best effort — ignore AV locks, read-only parents, concurrent mkdir races, etc.
   }
 }"""
@@ -525,6 +525,134 @@ printf '%-22s' "cleanup best-effort"
 expect_fail "cleanup best-effort" lib/src/http/partial_storage_cleanup.dart \
   test/partial_storage_cleanup_test.dart \
   "terminal failed event is emitted when empty-dir cleanup throws"
+
+# 25) shared partial storage lease must block empty-dir cleanup for active siblings
+matrix_track lib/src/http_background_downloads.dart lib/src/http/partial_storage_lease.dart
+python3 - <<'PY'
+from pathlib import Path
+p = Path("lib/src/http_background_downloads.dart")
+text = p.read_text()
+old_acquire = "    acquirePartialStorageLease(destination.path);\n\n    try {"
+if old_acquire not in text:
+    raise SystemExit("revert_matrix: partial storage lease acquire anchor not found")
+text = text.replace(old_acquire, "    try {", 1)
+old_finally = """    } finally {
+      releasePartialStorageLeaseAndMaybeCleanup(destination.path);
+      client.close(force: true);"""
+new_finally = """    } finally {
+      client.close(force: true);"""
+if old_finally not in text:
+    raise SystemExit("revert_matrix: partial storage lease finally anchor not found")
+text = text.replace(old_finally, new_finally, 1)
+old_success = """      _jobs.remove(job.request.artifactId);
+    } on Object catch (error) {"""
+new_success = """      _jobs.remove(job.request.artifactId);
+      tryRemoveEmptyPartialStorageDirectory(destination.path);
+    } on Object catch (error) {"""
+if old_success not in text:
+    raise SystemExit("revert_matrix: partial storage success cleanup anchor not found")
+text = text.replace(old_success, new_success, 1)
+old_catch = """      _emit(job.snapshot());
+    } finally {
+      client.close(force: true);"""
+new_catch = """      _emit(job.snapshot());
+      tryRemoveEmptyPartialStorageDirectory(destination.path);
+    } finally {
+      client.close(force: true);"""
+if old_catch not in text:
+    raise SystemExit("revert_matrix: partial storage failure cleanup anchor not found")
+text = text.replace(old_catch, new_catch, 1)
+p.write_text(text)
+Path("lib/src/http/partial_storage_lease.dart").write_text(
+    """import 'partial_storage_cleanup.dart';
+
+void acquirePartialStorageLease(String destinationPath) {}
+
+void releasePartialStorageLeaseAndMaybeCleanup(String destinationPath) {
+  tryRemoveEmptyPartialStorageDirectory(destinationPath);
+}
+
+int partialStorageLeaseCountForDestination(String destinationPath) => 0;
+
+void resetPartialStorageLeasesForTest() {}
+"""
+)
+PY
+printf '%-22s' "partial storage lease"
+expect_fail "partial storage lease" lib/src/http/partial_storage_lease.dart \
+  test/partial_storage_cleanup_test.dart \
+  "failed sibling keeps shared partial storage while another job is mid-request"
+
+# 26) ensurePrivatePartialStorage must run immediately before partial open
+matrix_track lib/src/http_background_downloads.dart
+python3 - <<'PY'
+from pathlib import Path
+p = Path("lib/src/http_background_downloads.dart")
+text = p.read_text()
+old = """      if (beforeOpen != null) {
+        await beforeOpen(job.request.artifactId);
+      }
+      ensurePrivatePartialStorage(job.request.destinationPath);
+
+      late final PartialFileWriter writer;"""
+new = """      if (beforeOpen != null) {
+        await beforeOpen(job.request.artifactId);
+      }
+
+      late final PartialFileWriter writer;"""
+if old not in text:
+    raise SystemExit("revert_matrix: pre-open ensure anchor not found")
+p.write_text(text.replace(old, new, 1))
+PY
+printf '%-22s' "pre-open ensure"
+expect_fail "pre-open ensure" lib/src/http_background_downloads.dart \
+  test/partial_storage_cleanup_test.dart \
+  "sibling completes after shared partial storage removed mid-request"
+
+# 27) mkdir retry loop must tolerate empty-dir removal races
+matrix_track lib/src/http/download_directory_guard.dart
+python3 - <<'PY'
+from pathlib import Path
+p = Path("lib/src/http/download_directory_guard.dart")
+text = p.read_text()
+old = """  if (type == FileSystemEntityType.notFound) {
+    for (var attempt = 0; attempt < 3; attempt++) {
+      if (Directory(directoryPath).existsSync()) {
+        break;
+      }
+      final result = posixMkdir(directoryPath, _privateDirMode);
+      if (result == 0 || Directory(directoryPath).existsSync()) {
+        break;
+      }
+      if (attempt == 2) {
+        throw FileSystemException(
+          'Cannot create partial storage directory',
+          directoryPath,
+        );
+      }
+    }
+  }"""
+new = """  if (type == FileSystemEntityType.notFound) {
+    if (Directory(directoryPath).existsSync()) {
+      // ok
+    } else {
+      final result = posixMkdir(directoryPath, _privateDirMode);
+      if (result != 0 && !Directory(directoryPath).existsSync()) {
+        throw FileSystemException(
+          'Cannot create partial storage directory',
+          directoryPath,
+        );
+      }
+    }
+  }"""
+if old not in text:
+    raise SystemExit("revert_matrix: mkdir retry anchor not found")
+p.write_text(text.replace(old, new, 1))
+PY
+printf '%-22s' "mkdir retry"
+expect_fail "mkdir retry" lib/src/http/download_directory_guard.dart \
+  test/partial_storage_cleanup_test.dart \
+  "ensurePrivatePartialStorage retries mkdir after a lost create race"
 
 echo "Done."
 matrix_restore_touched

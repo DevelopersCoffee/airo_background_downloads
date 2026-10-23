@@ -47,7 +47,14 @@ final int Function(int, int, int) _posixFcntl = posixLib()
 typedef MkdirNative = Int32 Function(Pointer<Utf8>, Int32);
 typedef MkdirDart = int Function(Pointer<Utf8>, int);
 
+@visibleForTesting
+int Function(String path, int mode)? posixMkdirOverrideForTest;
+
 int posixMkdir(String path, int mode) {
+  final override = posixMkdirOverrideForTest;
+  if (override != null) {
+    return override(path, mode);
+  }
   final mkdirFn = posixLib().lookupFunction<MkdirNative, MkdirDart>('mkdir');
   final pathPtr = path.toNativeUtf8();
   try {

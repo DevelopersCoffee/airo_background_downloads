@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:airo_background_downloads/airo_background_downloads.dart';
 import 'package:airo_background_downloads/src/http/download_directory_guard.dart';
 import 'package:airo_background_downloads/src/http/partial_storage_cleanup.dart';
+import 'package:airo_background_downloads/src/http/partial_storage_lease.dart';
 import 'package:airo_background_downloads/src/http/partial_storage_paths.dart';
+import 'package:airo_background_downloads/src/http/posix_variadic.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -42,6 +45,8 @@ void main() {
 
   tearDown(() async {
     removeEmptyPartialStorageOverrideForTest = null;
+    resetPartialStorageLeasesForTest();
+    posixMkdirOverrideForTest = null;
     await tempDir.delete(recursive: true);
   });
 
@@ -131,20 +136,177 @@ void main() {
     expect(await destination.readAsBytes(), equals(payload));
   });
 
-  test('ensurePrivatePartialStorage tolerates empty-dir removal race', () {
+  test('ensurePrivatePartialStorage retries mkdir after a lost create race', () {
     if (!Platform.isLinux && !Platform.isMacOS) return;
 
-    final destPath = '${tempDir.path}/race/model.bin';
-    ensurePrivatePartialStorage(destPath);
+    final destPath = '${tempDir.path}/mkdir-race/model.bin';
     final storage =
         PartialStoragePaths.forDestination(destPath).storageDirectory;
+    var mkdirCalls = 0;
+    posixMkdirOverrideForTest = (path, mode) {
+      mkdirCalls++;
+      if (mkdirCalls == 1) {
+        return 1;
+      }
+      posixMkdirOverrideForTest = null;
+      return posixMkdir(path, mode);
+    };
 
-    tryRemoveEmptyPartialStorageDirectory(destPath);
     ensurePrivatePartialStorage(destPath);
-    expect(Directory(storage).existsSync(), isTrue);
-
-    tryRemoveEmptyPartialStorageDirectory(destPath);
-    ensurePrivatePartialStorage('${tempDir.path}/race/other-model.bin');
+    expect(mkdirCalls, greaterThanOrEqualTo(2));
     expect(Directory(storage).existsSync(), isTrue);
   });
+
+  test(
+    'failed sibling keeps shared partial storage while another job is mid-request',
+    () async {
+      final payload = utf8.encode('sibling-b-payload');
+      final destB = File('${tempDir.path}/sibling-dir/b.bin');
+      final destA = File('${tempDir.path}/sibling-dir/a.bin');
+      final storage =
+          PartialStoragePaths.forDestination(destB.path).storageDirectory;
+
+      final bBlockedBeforeOpen = Completer<void>();
+      final bReachedPreOpen = Completer<void>();
+
+      final serverB = await HttpServer.bindSecure(
+        InternetAddress.loopbackIPv4,
+        0,
+        serverContext,
+      );
+      addTearDown(() async => serverB.close(force: true));
+      serverB.listen((request) async {
+        request.response
+          ..statusCode = HttpStatus.ok
+          ..contentLength = payload.length
+          ..add(payload)
+          ..close();
+      });
+
+      final serverA = await HttpServer.bindSecure(
+        InternetAddress.loopbackIPv4,
+        0,
+        serverContext,
+      );
+      addTearDown(() async => serverA.close(force: true));
+      serverA.listen((request) async {
+        request.response
+          ..statusCode = HttpStatus.found
+          ..close();
+      });
+
+      final downloads = HttpBackgroundDownloads(clientFactory: testClient)
+        ..beforeOpenPartialWriterForTest = (artifactId) async {
+          if (artifactId != 'job-b') return;
+          bReachedPreOpen.complete();
+          await bBlockedBeforeOpen.future;
+        };
+
+      await downloads.enqueue(
+        DownloadArtifactRequest(
+          artifactId: 'job-b',
+          source: Uri.parse(
+            'https://${serverB.address.host}:${serverB.port}/b',
+          ),
+          destinationPath: destB.path,
+          expectedBytes: payload.length,
+        ),
+      );
+
+      await bReachedPreOpen.future;
+      expect(partialStorageLeaseCountForDestination(destB.path), 1);
+
+      await downloads.enqueue(
+        DownloadArtifactRequest(
+          artifactId: 'job-a',
+          source: Uri.parse(
+            'https://${serverA.address.host}:${serverA.port}/a',
+          ),
+          destinationPath: destA.path,
+        ),
+      );
+
+      final aTerminal = await downloads.events.firstWhere(
+        (e) =>
+            e.artifactId == 'job-a' &&
+            (e.status == DownloadStatus.completed ||
+                e.status == DownloadStatus.failed),
+      );
+      expect(aTerminal.status, DownloadStatus.failed);
+      expect(Directory(storage).existsSync(), isTrue);
+
+      if (!bBlockedBeforeOpen.isCompleted) {
+        bBlockedBeforeOpen.complete();
+      }
+
+      final bTerminal = await downloads.events.firstWhere(
+        (e) =>
+            e.artifactId == 'job-b' &&
+            (e.status == DownloadStatus.completed ||
+                e.status == DownloadStatus.failed),
+      );
+      expect(bTerminal.status, DownloadStatus.completed);
+      expect(await destB.readAsBytes(), equals(payload));
+    },
+  );
+
+  test(
+    'sibling completes after shared partial storage removed mid-request',
+    () async {
+      final payload = utf8.encode('sibling-recover-payload');
+      final destB = File('${tempDir.path}/recover-dir/b.bin');
+      final storage =
+          PartialStoragePaths.forDestination(destB.path).storageDirectory;
+
+      final bBlockedBeforeOpen = Completer<void>();
+      final bReachedPreOpen = Completer<void>();
+
+      final serverB = await HttpServer.bindSecure(
+        InternetAddress.loopbackIPv4,
+        0,
+        serverContext,
+      );
+      addTearDown(() async => serverB.close(force: true));
+      serverB.listen((request) async {
+        request.response
+          ..statusCode = HttpStatus.ok
+          ..contentLength = payload.length
+          ..add(payload)
+          ..close();
+      });
+
+      final downloads = HttpBackgroundDownloads(clientFactory: testClient)
+        ..beforeOpenPartialWriterForTest = (artifactId) async {
+          if (artifactId != 'job-b') return;
+          bReachedPreOpen.complete();
+          await bBlockedBeforeOpen.future;
+        };
+
+      await downloads.enqueue(
+        DownloadArtifactRequest(
+          artifactId: 'job-b',
+          source: Uri.parse(
+            'https://${serverB.address.host}:${serverB.port}/b',
+          ),
+          destinationPath: destB.path,
+          expectedBytes: payload.length,
+        ),
+      );
+
+      await bReachedPreOpen.future;
+      tryRemoveEmptyPartialStorageDirectory(destB.path);
+      expect(Directory(storage).existsSync(), isFalse);
+
+      bBlockedBeforeOpen.complete();
+
+      final bTerminal = await downloads.events.firstWhere(
+        (e) =>
+            e.artifactId == 'job-b' &&
+            (e.status == DownloadStatus.completed ||
+                e.status == DownloadStatus.failed),
+      );
+      expect(bTerminal.status, DownloadStatus.completed);
+      expect(await destB.readAsBytes(), equals(payload));
+    },
+  );
 }

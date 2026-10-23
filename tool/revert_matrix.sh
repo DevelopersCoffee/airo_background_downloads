@@ -3,13 +3,53 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-restore_worktree() {
-  git checkout -- . >/dev/null 2>&1 || true
-}
-
-trap restore_worktree EXIT INT TERM
+MATRIX_TOUCHED=()
+MATRIX_WAS_INTERRUPTED=false
 
 fail() { echo "MATRIX ERROR: $*" >&2; exit 1; }
+
+matrix_require_clean_tree() {
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    fail "refusing to start: working tree is dirty (commit or stash changes first)"
+  fi
+}
+
+matrix_track() {
+  local f
+  for f in "$@"; do
+    MATRIX_TOUCHED+=("$f")
+  done
+}
+
+matrix_restore_touched() {
+  local f seen=" "
+  for f in "${MATRIX_TOUCHED[@]}"; do
+    case "$seen" in *" $f "*) continue ;; esac
+    seen="${seen}${f} "
+    git checkout -- "$f" 2>/dev/null || true
+  done
+}
+
+matrix_verify_clean() {
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    fail "matrix left the working tree dirty after restore"
+  fi
+}
+
+matrix_on_exit() {
+  local exit_code=$?
+  matrix_restore_touched
+  if $MATRIX_WAS_INTERRUPTED; then
+    echo "MATRIX ERROR: revert matrix interrupted; restored files modified in this run" >&2
+  fi
+  exit "$exit_code"
+}
+
+trap matrix_on_exit EXIT
+trap 'MATRIX_WAS_INTERRUPTED=true; exit 130' INT
+trap 'MATRIX_WAS_INTERRUPTED=true; exit 143' TERM
+
+matrix_require_clean_tree
 
 run_test() {
   flutter test "$1" --name "$2" >/dev/null 2>&1
@@ -20,6 +60,7 @@ expect_fail() {
   local file="$2"
   local test_file="$3"
   local test_name="$4"
+  matrix_track "$file"
   if run_test "$test_file" "$test_name"; then
     git checkout -- "$file"
     fail "$label: test still passed after revert"
@@ -53,12 +94,12 @@ echo "Revert-proof"
 
 if ! $IS_LINUX && ! $IS_MAC; then
   echo "Non-POSIX host: only path-level rows are not run here."
-  restore_worktree
-  git diff --exit-code
+  matrix_verify_clean
   exit 0
 fi
 
 # 1) nlink (path)
+matrix_track lib/src/http/partial_file_io.dart
 sed_inplace 's/linkCount == 1/linkCount != null/' lib/src/http/partial_file_io.dart
 printf '%-22s' "K1/nlink"
 expect_fail "nlink" lib/src/http/partial_file_io.dart \
@@ -138,6 +179,7 @@ expect_fail "fd identity" lib/src/http/partial_file_writer_posix.dart \
   test/partial_file_writer_fd_guard_test.dart "fd-level identity check rejects changed dev/ino"
 
 # 13) openVerified write path (K1 integration)
+matrix_track lib/src/http/partial_path_guard.dart lib/src/http/partial_file_writer_posix.dart
 python3 - <<'PY'
 from pathlib import Path
 p = Path("lib/src/http/partial_path_guard.dart")
@@ -193,7 +235,9 @@ git checkout -- lib/src/http/partial_path_guard.dart lib/src/http/partial_file_w
 echo "Yes"
 
 # 14) E1 variadic open mode (0600 partial create)
+matrix_track lib/src/http/partial_file_writer_posix.dart
 if $IS_MAC; then
+  matrix_track lib/src/http/posix_variadic.dart
   sed_inplace 's/VarArgs<(Int32,)>/Int32/' lib/src/http/posix_variadic.dart
   sed_inplace 's/int flags, \[int mode\]/int flags, int mode/' lib/src/http/posix_variadic.dart
 else
@@ -447,6 +491,41 @@ else
   skip_row "umask probe"
 fi
 
+# 24) empty partial storage cleanup must be best-effort (never block terminal events)
+matrix_track lib/src/http/partial_storage_cleanup.dart
+python3 - <<'PY'
+from pathlib import Path
+p = Path("lib/src/http/partial_storage_cleanup.dart")
+text = p.read_text()
+old = """void tryRemoveEmptyPartialStorageDirectory(String destinationPath) {
+  try {
+    final override = removeEmptyPartialStorageOverrideForTest;
+    if (override != null) {
+      override(destinationPath);
+      return;
+    }
+    _removeEmptyPartialStorageDirectoryImpl(destinationPath);
+  } on Object {
+    // Best effort — ignore AV locks, read-only parents, concurrent mkdir races, etc.
+  }
+}"""
+new = """void tryRemoveEmptyPartialStorageDirectory(String destinationPath) {
+  final override = removeEmptyPartialStorageOverrideForTest;
+  if (override != null) {
+    override(destinationPath);
+    return;
+  }
+  _removeEmptyPartialStorageDirectoryImpl(destinationPath);
+}"""
+if old not in text:
+    raise SystemExit("revert_matrix: cleanup best-effort anchor not found")
+p.write_text(text.replace(old, new, 1))
+PY
+printf '%-22s' "cleanup best-effort"
+expect_fail "cleanup best-effort" lib/src/http/partial_storage_cleanup.dart \
+  test/partial_storage_cleanup_test.dart \
+  "terminal failed event is emitted when empty-dir cleanup throws"
+
 echo "Done."
-restore_worktree
-git diff --exit-code
+matrix_restore_touched
+matrix_verify_clean

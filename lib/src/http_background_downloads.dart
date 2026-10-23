@@ -231,25 +231,25 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         validatorStore,
         job.request,
       );
-      tryRemoveEmptyPartialStorageDirectory(destination.path);
 
       job.status = DownloadStatus.completed;
       job.downloadedBytes = destination.lengthSync();
       job.totalBytes = job.downloadedBytes;
       _emit(job.snapshot());
       _jobs.remove(job.request.artifactId);
+      tryRemoveEmptyPartialStorageDirectory(destination.path);
     } on Object catch (error) {
       if (job.cancelRequested) {
         await _persistPartialProgress(job);
         return;
       }
-      tryRemoveEmptyPartialStorageDirectory(destination.path);
       job.status = DownloadStatus.failed;
       job.failure = DownloadFailure(
         code: DownloadFailureCode.transport,
         message: '$error',
       );
       _emit(job.snapshot());
+      tryRemoveEmptyPartialStorageDirectory(destination.path);
     } finally {
       client.close(force: true);
       job.client = null;

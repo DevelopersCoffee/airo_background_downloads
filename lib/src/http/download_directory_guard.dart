@@ -41,12 +41,20 @@ void _ensurePrivatePosixLeaf(String directoryPath) {
     );
   }
   if (type == FileSystemEntityType.notFound) {
-    final result = posixMkdir(directoryPath, _privateDirMode);
-    if (result != 0 && !Directory(directoryPath).existsSync()) {
-      throw FileSystemException(
-        'Cannot create partial storage directory',
-        directoryPath,
-      );
+    for (var attempt = 0; attempt < 3; attempt++) {
+      if (Directory(directoryPath).existsSync()) {
+        break;
+      }
+      final result = posixMkdir(directoryPath, _privateDirMode);
+      if (result == 0 || Directory(directoryPath).existsSync()) {
+        break;
+      }
+      if (attempt == 2) {
+        throw FileSystemException(
+          'Cannot create partial storage directory',
+          directoryPath,
+        );
+      }
     }
   }
   _verifyPrivatePosixDirectory(directoryPath);

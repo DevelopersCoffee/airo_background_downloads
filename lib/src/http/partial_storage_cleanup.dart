@@ -1,10 +1,31 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
 import 'partial_file_stat.dart';
 import 'partial_storage_paths.dart';
 
+@visibleForTesting
+void Function(String destinationPath)?
+    removeEmptyPartialStorageOverrideForTest;
+
 /// Removes [PartialStoragePaths.storageDirectory] when it is empty and still ours.
+///
+/// Best-effort only: never throws; failures must not affect download status/events.
 void tryRemoveEmptyPartialStorageDirectory(String destinationPath) {
+  try {
+    final override = removeEmptyPartialStorageOverrideForTest;
+    if (override != null) {
+      override(destinationPath);
+      return;
+    }
+    _removeEmptyPartialStorageDirectoryImpl(destinationPath);
+  } on Object {
+    // Best effort — ignore AV locks, read-only parents, concurrent mkdir races, etc.
+  }
+}
+
+void _removeEmptyPartialStorageDirectoryImpl(String destinationPath) {
   final storagePath =
       PartialStoragePaths.forDestination(destinationPath).storageDirectory;
   final dir = Directory(storagePath);

@@ -8,12 +8,13 @@ import 'download_models.dart';
 import 'http/partial_file_identity.dart';
 import 'http/partial_file_io.dart';
 import 'http/download_directory_guard.dart';
-import 'http/partial_storage_cleanup.dart';
+import 'http/partial_storage_lease.dart';
 import 'http/partial_storage_paths.dart';
 import 'http/posix_variadic.dart';
 import 'http/partial_path_guard.dart';
 import 'http/resume_policy.dart';
 import 'http/resume_validator_store.dart';
+import 'http/secure_http_fetch.dart';
 import 'processors/streaming_checksum.dart';
 
 const Duration _defaultConnectionTimeout = Duration(seconds: 30);
@@ -57,6 +58,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
   @visibleForTesting
   Future<void> Function(File partial, File destination)?
   get onBeforeCommitPartial => _onBeforeCommitPartial;
+
+  /// Called after a successful HTTP response and immediately before partial open.
+  @visibleForTesting
+  Future<void> Function(String artifactId)? beforeOpenPartialWriterForTest;
 
   @override
   Stream<DownloadProgress> get events => _events.stream;
@@ -175,6 +180,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
     client.userAgent = 'Airo/1.0 (platform_downloads; dart)';
     job.client = client;
     final startedAt = DateTime.now();
+    acquirePartialStorageLease(destination.path);
 
     try {
       ensurePrivatePartialStorage(destination.path);
@@ -230,7 +236,6 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         validatorStore,
         job.request,
       );
-      tryRemoveEmptyPartialStorageDirectory(destination.path);
 
       job.status = DownloadStatus.completed;
       job.downloadedBytes = destination.lengthSync();
@@ -249,6 +254,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
       );
       _emit(job.snapshot());
     } finally {
+      releasePartialStorageLeaseAndMaybeCleanup(destination.path);
       client.close(force: true);
       job.client = null;
     }
@@ -294,18 +300,19 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         job.downloadedBytes = 0;
       }
 
-      final outgoing = await client.getUrl(job.request.source);
-      outgoing.followRedirects = !maySendRange;
-      outgoing.maxRedirects = 8;
-      for (final entry in job.request.headers.entries) {
-        outgoing.headers.set(entry.key, entry.value);
-      }
-      if (maySendRange) {
-        outgoing.headers.set(HttpHeaders.rangeHeader, 'bytes=$resumeOffset-');
-        await applyIfRangeFromStore(outgoing, validatorStore, job.request);
-        outgoing.headers.set(HttpHeaders.connectionHeader, 'close');
-      }
-      final response = await outgoing.close();
+      final response = await openSecureHttpGet(
+        client: client,
+        originalSource: job.request.source,
+        requestHeaders: job.request.headers,
+        followSecureRedirects: !maySendRange,
+        configureRequest: (outgoing) async {
+          if (maySendRange) {
+            outgoing.headers.set(HttpHeaders.rangeHeader, 'bytes=$resumeOffset-');
+            await applyIfRangeFromStore(outgoing, validatorStore, job.request);
+            outgoing.headers.set(HttpHeaders.connectionHeader, 'close');
+          }
+        },
+      );
       _recordResumeCapability(job, response);
 
       if (response.statusCode == 401 || response.statusCode == 403) {
@@ -388,7 +395,14 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         );
       }
 
+      final beforeOpen = beforeOpenPartialWriterForTest;
+      if (beforeOpen != null) {
+        await beforeOpen(job.request.artifactId);
+      }
+      ensurePrivatePartialStorage(job.request.destinationPath);
+
       late final PartialFileWriter writer;
+      PartialFileIdentity? activePartialIdentity;
       try {
         writer = await _partialFileIo.openVerifiedPartialWriter(
           partial.path,
@@ -401,6 +415,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         if (job.partialOpenFailures > 4) {
           rethrow;
         }
+        await _drainResponse(response);
         _partialFileIo.unlinkPartialEntry(partial.path);
         validatorStore.deleteSync();
         job.downloadedBytes = 0;
@@ -416,6 +431,7 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         writer.identity,
         request: job.request,
       );
+      activePartialIdentity = writer.identity;
 
       var bytesReceived = 0;
       var writerClosed = false;
@@ -433,7 +449,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
               request: job.request,
             );
             await closeWriter();
-            await _partialFileIo.syncFile(partial.path);
+            await _partialFileIo.syncFile(
+              partial.path,
+              expectedIdentityAtReopen: activePartialIdentity,
+            );
             return;
           }
           _enforceSizeCap(resumeOffset + bytesReceived + chunk.length, job);
@@ -448,7 +467,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
         }
       } on TimeoutException {
         await closeWriter();
-        await _partialFileIo.syncFile(partial.path);
+        await _partialFileIo.syncFile(
+          partial.path,
+          expectedIdentityAtReopen: activePartialIdentity,
+        );
         throw HttpException('HTTP idle read timeout');
       } on Object {
         if (job.cancelRequested) {
@@ -457,7 +479,10 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
             request: job.request,
           );
           await closeWriter();
-          await _partialFileIo.syncFile(partial.path);
+          await _partialFileIo.syncFile(
+            partial.path,
+            expectedIdentityAtReopen: activePartialIdentity,
+          );
           return;
         }
         await closeWriter();
@@ -528,7 +553,14 @@ class HttpBackgroundDownloads implements BackgroundDownloads {
               job.downloadedBytes,
               request: job.request,
             );
-    await _partialFileIo.syncFile(partialPath);
+    PartialFileIdentity? storedIdentity;
+    if (Platform.isLinux || Platform.isMacOS) {
+      storedIdentity = await validatorStore.readPartialIdentityFor(job.request);
+    }
+    await _partialFileIo.syncFile(
+      partialPath,
+      expectedIdentityAtReopen: storedIdentity,
+    );
   }
 
   int? _normalizedContentLength(HttpClientResponse response) {

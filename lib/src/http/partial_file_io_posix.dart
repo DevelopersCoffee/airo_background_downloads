@@ -117,7 +117,8 @@ base class PosixPartialFileIo implements PartialFileIo {
     if (!File(path).existsSync()) {
       throw FileSystemException('Cannot fsync missing file', path);
     }
-    if (Platform.isMacOS) {
+    if (Platform.isMacOS ||
+        (Platform.isLinux && expectedIdentityAtReopen != null)) {
       posixSyncRegularFileViaFd(
         path,
         expectedIdentity: expectedIdentityAtReopen,

@@ -2,6 +2,10 @@
 
 ## 1.2.1
 
+- **Desktop HTTP redirects**: Fresh downloads follow redirects manually (max 8 hops), refuse any non-HTTPS hop, and send custom `DownloadArtifactRequest.headers` only to the original origin (cross-origin CDN hops do not receive secrets such as `X-Api-Key`). Resume with `Range` still does not follow redirects.
+- **Commit identity**: Partial rename commits re-check the stored partial inode identity from `.meta` on reopen (swap-before-commit is refused even when SHA-256 verification already ran).
+- **POSIX**: Process umask is read without mutating libc umask (exclusive-create probe on macOS; `/proc/self/status` on Linux). macOS cancel/timeout sync paths pass stored partial identity into `F_FULLFSYNC`. Close failures after a successful sync action still surface the action error.
+- **CI / tooling**: `extractions/setup-just` SHA-pinned; Justfile revert matrix no longer runs `git checkout -- .`; `just publish` no longer passes `--force`.
 - **Docs (Android / Google Play)**: README sections on the Google Play data sync foreground service declaration (component, start/stop, ready-to-paste Play Console answers, required `SystemForegroundService` manifest entry for Android 14+, Android 15 six-hour limit), notifications and Android 13+ `POST_NOTIFICATIONS`, privacy and telemetry, removing the foreground service permission, large files and resume, and a Known gaps list.
 - **Docs**: `AiroDownloadTelemetrySnapshot.toMap()` is documented as local diagnostics that the package never sends (it previously said "for analytics logging"). `DownloadNotificationConfig` and `AiroDownloadNotificationController` are documented as Dart-only helpers that do not change the native notification.
 - **Docs**: The desktop-only error message and README now name `createBackgroundDownloads()`; `BackgroundDownloads.platform()` does not exist.

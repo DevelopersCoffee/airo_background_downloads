@@ -16,16 +16,13 @@ jobs:
             platform: linux-x64
           - os: macos-latest
             platform: macos-arm64
-          - os: macos-13
-            platform: macos-x64
-            optional: true
+          # No macos-13 / Intel macOS job: README and CHANGELOG 1.2.1 do not claim Intel Mac support.
           - os: windows-latest
             platform: windows-x64
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.optional == true }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: extractions/setup-just@v3
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b
         with:
           just-version: "1.39.0"
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2

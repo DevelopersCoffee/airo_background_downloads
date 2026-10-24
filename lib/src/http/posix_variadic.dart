@@ -47,7 +47,14 @@ final int Function(int, int, int) _posixFcntl = posixLib()
 typedef MkdirNative = Int32 Function(Pointer<Utf8>, Int32);
 typedef MkdirDart = int Function(Pointer<Utf8>, int);
 
+@visibleForTesting
+int Function(String path, int mode)? posixMkdirOverrideForTest;
+
 int posixMkdir(String path, int mode) {
+  final override = posixMkdirOverrideForTest;
+  if (override != null) {
+    return override(path, mode);
+  }
   final mkdirFn = posixLib().lookupFunction<MkdirNative, MkdirDart>('mkdir');
   final pathPtr = path.toNativeUtf8();
   try {
@@ -63,7 +70,19 @@ const darwinFullFsyncCmd = 51;
 int? _cachedProcessUmask;
 
 @visibleForTesting
+bool posixUmaskLastReadUsedExclusiveProbe = false;
+
+@visibleForTesting
+void resetPosixUmaskCacheForTest() {
+  _cachedProcessUmask = null;
+  posixUmaskLastReadUsedExclusiveProbe = false;
+}
+
+@visibleForTesting
 int Function(int fd)? darwinFullFsyncOverrideForTest;
+
+@visibleForTesting
+int Function(int fd)? posixCloseOverrideForTest;
 
 int posixDarwinFullFsync(int fd) {
   final override = darwinFullFsyncOverrideForTest;
@@ -97,16 +116,57 @@ int posixCurrentUmask() {
         }
       }
     } on Object {
-      // Fall through to libc umask probe.
+      // Fall through to race-free probe file.
     }
   }
-  final umaskFn = posixLib().lookupFunction<
-      Int32 Function(Int32),
-      int Function(int)>('umask');
-  final previous = umaskFn(0);
-  umaskFn(previous);
-  _cachedProcessUmask = previous & 511;
+  _cachedProcessUmask = _probeProcessUmaskViaExclusiveCreate();
   return _cachedProcessUmask!;
+}
+
+/// Reads umask without mutating the process umask (exclusive create at 0666).
+int _probeProcessUmaskViaExclusiveCreate() {
+  const requestedMode = 438; // 0666
+  final dir = Directory.systemTemp.createTempSync('airo-umask-probe-');
+  try {
+    final path = '${dir.path}/probe';
+    const linuxOCreat = 64;
+    const linuxOExcl = 128;
+    const linuxOWronly = 1;
+    const darwinOCreat = 512;
+    const darwinOExcl = 2048;
+    const darwinOWronly = 1;
+    final flags = Platform.isLinux
+        ? linuxOWronly | linuxOCreat | linuxOExcl
+        : darwinOWronly | darwinOCreat | darwinOExcl;
+    final fd = posixOpen(path, flags, mode: requestedMode);
+    if (fd < 0) {
+      throw FileSystemException('umask probe create failed', path);
+    }
+    try {
+      final actualMode = platformPathMode(path);
+      if (actualMode == null) {
+        throw FileSystemException('umask probe mode read failed', path);
+      }
+      posixUmaskLastReadUsedExclusiveProbe = true;
+      return (requestedMode & ~actualMode) & 511;
+    } finally {
+      final closeFn = posixLib().lookupFunction<
+          Int32 Function(Int32),
+          int Function(int)>('close');
+      closeFn(fd);
+      try {
+        File(path).deleteSync();
+      } on Object {
+        // Best effort.
+      }
+    }
+  } finally {
+    try {
+      dir.deleteSync(recursive: true);
+    } on Object {
+      // Best effort.
+    }
+  }
 }
 
 /// Mode for committed regular files: `0666 & ~umask`.
@@ -114,12 +174,18 @@ int posixCommittedRegularFileMode() =>
     (438 & ~posixCurrentUmask()) & 511;
 
 void _posixCloseChecked(int fd, String path) {
+  final override = posixCloseOverrideForTest;
+  final result = override != null ? override(fd) : _libcClose(fd);
+  if (result != 0) {
+    throw FileSystemException('close failed', path);
+  }
+}
+
+int _libcClose(int fd) {
   final closeFn = posixLib().lookupFunction<
       Int32 Function(Int32),
       int Function(int)>('close');
-  if (closeFn(fd) != 0) {
-    throw FileSystemException('close failed', path);
-  }
+  return closeFn(fd);
 }
 
 void _verifyReopenedIdentity(
